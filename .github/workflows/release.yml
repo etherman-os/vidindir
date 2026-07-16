@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Optional Apple release secrets:
+#   MACOS_CERTIFICATE_P12_BASE64, MACOS_CERTIFICATE_PASSWORD,
+#   MACOS_SIGNING_IDENTITY, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+# Without a complete set, the workflow uploads an explicitly labeled artifact
+# for maintainers but does not publish it as a public GitHub Release.
+
+jobs:
+  macos:
+    name: Build macOS release
+    runs-on: macos-15
+    env:
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Test
+        run: swift test
+
+      - name: Build release binary
+        run: swift build -c release
+
+      - name: Package app bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x Scripts/package_app.sh Scripts/create_dmg.sh
+          ./Scripts/package_app.sh
+
+          app_path="$(/usr/bin/find dist -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo "No app bundle was produced in dist." >&2
+            exit 1
+          fi
+
+          app_display_name="$(basename "$app_path" .app)"
+          app_file_stem="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
+          app_slug="$(printf '%s' "$app_file_stem" | /usr/bin/sed 's/[^A-Za-z0-9._-]/-/g')"
+          app_slug="${app_slug:-App}"
+          build_arch="$(uname -m)"
+          version="${GITHUB_REF_NAME#v}"
+          marketing_version="${version%%-*}"
+          if [[ ! "$marketing_version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+            marketing_version="0.0.$GITHUB_RUN_NUMBER"
+          fi
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $marketing_version" "$app_path/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$app_path/Contents/Info.plist"
+
+          # Updating Info.plist invalidates the package script's ad-hoc signature.
+          /usr/bin/codesign --force --deep --sign - "$app_path"
+
+          echo "APP_PATH=$app_path" >> "$GITHUB_ENV"
+          echo "APP_DISPLAY_NAME=$app_display_name" >> "$GITHUB_ENV"
+          echo "APP_SLUG=$app_slug" >> "$GITHUB_ENV"
+          echo "BUILD_ARCH=$build_arch" >> "$GITHUB_ENV"
+
+      - name: Import Developer ID certificate
+        id: signing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$MACOS_CERTIFICATE_P12_BASE64" || -z "$MACOS_CERTIFICATE_PASSWORD" || -z "$MACOS_SIGNING_IDENTITY" ]]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "Developer ID secrets are incomplete; producing an unsigned fallback."
+            exit 0
+          fi
+
+          certificate_path="$RUNNER_TEMP/app-signing.p12"
+          keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
+          keychain_password="$(/usr/bin/openssl rand -hex 24)"
+
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | /usr/bin/base64 -D > "$certificate_path"
+          /usr/bin/security create-keychain -p "$keychain_password" "$keychain_path"
+          /usr/bin/security set-keychain-settings -lut 21600 "$keychain_path"
+          /usr/bin/security unlock-keychain -p "$keychain_password" "$keychain_path"
+          /usr/bin/security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          /usr/bin/security list-keychains -d user -s "$keychain_path"
+          /usr/bin/security default-keychain -d user -s "$keychain_path"
+          /usr/bin/security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+
+          /usr/bin/codesign \
+            --force \
+            --deep \
+            --options runtime \
+            --timestamp \
+            --sign "$MACOS_SIGNING_IDENTITY" \
+            "$APP_PATH"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Select release mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          safe_version="$(printf '%s' "$version" | /usr/bin/sed 's/[^A-Za-z0-9._-]/-/g')"
+
+          if [[ "${{ steps.signing.outputs.signed }}" != "true" ]]; then
+            mode="unsigned"
+            dmg_name="$APP_SLUG-$safe_version-macOS-$BUILD_ARCH-unsigned.dmg"
+          elif [[ -n "$APPLE_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
+            mode="notarized"
+            dmg_name="$APP_SLUG-$safe_version-macOS-$BUILD_ARCH.dmg"
+          else
+            mode="signed-unnotarized"
+            dmg_name="$APP_SLUG-$safe_version-macOS-$BUILD_ARCH-signed-unnotarized.dmg"
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "dmg_name=$dmg_name" >> "$GITHUB_OUTPUT"
+          echo "Release mode: $mode" >> "$GITHUB_STEP_SUMMARY"
+          echo "Asset: $dmg_name" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create drag-to-Applications DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUT_DMG="$PWD/dist/${{ steps.mode.outputs.dmg_name }}" ./Scripts/create_dmg.sh
+
+          if [[ "${{ steps.signing.outputs.signed }}" == "true" ]]; then
+            /usr/bin/codesign \
+              --force \
+              --timestamp \
+              --sign "$MACOS_SIGNING_IDENTITY" \
+              "dist/${{ steps.mode.outputs.dmg_name }}"
+            /usr/bin/codesign --verify --verbose=2 "dist/${{ steps.mode.outputs.dmg_name }}"
+          fi
+
+      - name: Notarize and staple
+        if: steps.mode.outputs.mode == 'notarized'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="dist/${{ steps.mode.outputs.dmg_name }}"
+          /usr/bin/xcrun notarytool submit "$dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          /usr/bin/xcrun stapler staple "$dmg"
+          /usr/bin/xcrun stapler validate "$dmg"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.mode.outputs.dmg_name }}
+          path: dist/${{ steps.mode.outputs.dmg_name }}
+          if-no-files-found: error
+
+      - name: Publish GitHub release asset
+        if: steps.mode.outputs.mode == 'notarized'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          dmg="dist/${{ steps.mode.outputs.dmg_name }}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$dmg" --clobber
+          else
+            gh release create "$tag" "$dmg" \
+              --verify-tag \
+              --generate-notes \
+              --title "$APP_DISPLAY_NAME $tag"
+          fi
+
+      - name: Explain non-public fallback
+        if: steps.mode.outputs.mode != 'notarized'
+        run: |
+          echo "The DMG is available only as a workflow artifact." >> "$GITHUB_STEP_SUMMARY"
+          echo "GitHub Release publication requires Developer ID signing and notarization." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary signing keychain
+        if: always()
+        shell: bash
+        run: |
+          keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
+          if [[ -f "$keychain_path" ]]; then
+            /usr/bin/security delete-keychain "$keychain_path" || true
+          fi
