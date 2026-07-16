@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Show Swift version
         run: swift --version
@@ -175,7 +175,7 @@ jobs:
           /usr/bin/xcrun stapler validate "$dmg"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.mode.outputs.dmg_name }}
           path: dist/${{ steps.mode.outputs.dmg_name }}
