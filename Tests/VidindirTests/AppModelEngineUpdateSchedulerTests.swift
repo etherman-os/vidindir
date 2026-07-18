@@ -24,10 +24,10 @@ struct AppModelEngineUpdateSchedulerTests {
         #expect(started)
         #expect(sleeper.requestedIntervals == [.seconds(3_600)])
 
-        weak let weakModel = fixture.model
+        let weakModel = WeakReference(fixture.model)
         fixture.model = nil
         let stopped = await eventually {
-            weakModel == nil && sleeper.cancellationCount == 1
+            weakModel.value == nil && sleeper.cancellationCount == 1
         }
         #expect(stopped)
         #expect(sleeper.pendingCount == 0)
@@ -187,11 +187,11 @@ struct AppModelEngineUpdateSchedulerTests {
             sleeper: sleeper
         ))
 
-        weak let weakModel = fixture.model
+        let weakModel = WeakReference(fixture.model)
         fixture.model = nil
 
         let cancelled = await eventually {
-            weakModel == nil
+            weakModel.value == nil
                 && sleeper.pendingCount == 0
                 && sleeper.cancellationCount == 1
         }
@@ -211,11 +211,11 @@ struct AppModelEngineUpdateSchedulerTests {
             return snapshot.activeCount == 1 && sleeper.pendingCount == 1
         })
 
-        weak let weakModel = fixture.model
+        let weakModel = WeakReference(fixture.model)
         fixture.model = nil
 
         #expect(await eventually {
-            weakModel == nil
+            weakModel.value == nil
                 && sleeper.pendingCount == 0
                 && sleeper.cancellationCount == 1
         })
@@ -264,9 +264,9 @@ struct AppModelEngineUpdateSchedulerTests {
         fixture.model?.startDownload()
         #expect(await eventually { backend.isDownloading })
 
-        weak let weakModel = fixture.model
+        let weakModel = WeakReference(fixture.model)
         fixture.model = nil
-        #expect(await eventually { weakModel == nil })
+        #expect(await eventually { weakModel.value == nil })
 
         // Release the deliberately cancellation-insensitive backend so the
         // detached operation cannot outlive the test process.
@@ -349,6 +349,14 @@ struct AppModelEngineUpdateSchedulerTests {
             await Task.yield()
         }
         return false
+    }
+}
+
+private final class WeakReference<Value: AnyObject> {
+    weak var value: Value?
+
+    init(_ value: Value?) {
+        self.value = value
     }
 }
 
