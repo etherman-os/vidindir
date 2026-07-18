@@ -1,14 +1,22 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0"
-     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Vidindir Updates</title>
         <link>https://github.com/etherman-os/vidindir</link>
         <description>Verified Vidindir application updates.</description>
         <language>en</language>
+        <item>
+            <title>0.0.1</title>
+            <pubDate>Sat, 18 Jul 2026 17:28:47 +0000</pubDate>
+            <link>https://github.com/etherman-os/vidindir</link>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>0.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/etherman-os/vidindir/releases/download/v0.0.1/Vidindir-0.0.1-macOS-universal2.zip" length="7938793" type="application/octet-stream" sparkle:edSignature="wiQHWburMkuLBIGEzzYmA8udFKdjbFTGYZJ2zqKukVItAF2zTQ1ZAO0JftpFWdQk98C1p69P4Yij6yLn2OLKAg=="></enclosure>
+        </item>
     </channel>
-</rss>
-<!-- sparkle-signatures:
-edSignature: 9w98Bjncq0gZ3FsjO5k75Og/Wd5ERKMQ+HqnB7PZnDFho6ciwrYIGmueFa5KIdT5sz94JqVmLEzD1qlZf5eHDg==
-length: 375
+</rss><!-- sparkle-signatures:
+edSignature: Z25PoZDb96HG7/9fuV+ZLkarJjnYIO0H7jU3kMordHqxrAMA++A9qYONy8SsbpgXdsCBJcJ3agUZLSJtbvqECw==
+length: 1318
 -->
