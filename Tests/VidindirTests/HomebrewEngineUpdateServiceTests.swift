@@ -184,6 +184,7 @@ struct HomebrewEngineUpdateServiceTests {
         let service = HomebrewEngineUpdateService(
             homebrewURL: URL(fileURLWithPath: "/opt/homebrew/bin/brew"),
             runner: runner,
+            toolOverrides: testToolOverrides,
             defaults: UserDefaults(suiteName: prefix)!,
             persistenceKeyPrefix: prefix,
             persistenceDirectoryURL: testPersistenceDirectory(prefix),
