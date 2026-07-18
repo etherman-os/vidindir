@@ -20,8 +20,10 @@ concurrency:
 #   MACOS_SIGNING_IDENTITY, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
 #
 # Apple credentials are not required to publish a clearly labelled GitHub
-# prerelease. Only Developer ID signed and notarized builds are allowed to
-# update the stable Sparkle feed or become a stable GitHub Release.
+# prerelease. Preview builds sign the Sparkle archive with the Ed25519 update
+# key, so prerelease users receive new previews through the in-app updater.
+# Only Developer ID signed and notarized builds are allowed to become a
+# stable GitHub Release.
 
 jobs:
   macos:
@@ -328,7 +330,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Build and verify Sparkle update feed
-        if: steps.mode.outputs.publish_stable == 'true'
+        if: steps.mode.outputs.publish_stable == 'true' || steps.mode.outputs.publish_feed == 'true'
         id: sparkle
         env:
           SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
@@ -387,7 +389,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload signed update artifacts
-        if: steps.mode.outputs.publish_stable == 'true'
+        if: steps.mode.outputs.publish_stable == 'true' || steps.mode.outputs.publish_feed == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sparkle-${{ steps.release.outputs.version }}
@@ -456,6 +458,11 @@ jobs:
           dmg="dist/${{ steps.mode.outputs.dmg_name }}"
           dmg_name="$(basename "$dmg")"
 
+          assets=("$dmg")
+          if [[ "${{ steps.mode.outputs.publish_feed }}" == "true" ]]; then
+            assets+=("dist/${{ steps.sparkle.outputs.zip_name }}" "dist/appcast.xml")
+          fi
+
           if gh release view "$tag" >/dev/null 2>&1; then
             release_state="$(gh release view "$tag" --json isDraft,isPrerelease,isImmutable --jq '[.isDraft, .isPrerelease, .isImmutable] | @tsv')"
             IFS=$'\t' read -r is_draft is_prerelease is_immutable <<< "$release_state"
@@ -481,11 +488,11 @@ jobs:
                 exit 1
               fi
             else
-              gh release upload "$tag" "$dmg" --clobber
+              gh release upload "$tag" "${assets[@]}" --clobber
             fi
           else
-            preview_notes="> **Developer preview:** This build is not in Vidindir's stable update channel. macOS may require System Settings → Privacy & Security → Open Anyway after the first blocked launch. Install future previews manually."
-            gh release create "$tag" "$dmg" \
+            preview_notes="> **Developer preview:** This build is not in Vidindir's stable channel. macOS may require System Settings → Privacy & Security → Open Anyway after the first blocked launch. New previews are picked up automatically by the in-app updater."
+            gh release create "$tag" "${assets[@]}" \
               --verify-tag \
               --prerelease \
               --latest=false \
@@ -498,7 +505,7 @@ jobs:
           echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
 
       - name: Publish verified appcast to the stable feed
-        if: steps.mode.outputs.publish_stable == 'true' && steps.mode.outputs.publication_enabled == 'true'
+        if: (steps.mode.outputs.publish_stable == 'true' || steps.mode.outputs.publish_feed == 'true') && steps.mode.outputs.publication_enabled == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -536,7 +543,11 @@ jobs:
           echo "Prerelease: [${{ github.ref_name }}](${{ steps.prerelease.outputs.release_url }})" >> "$GITHUB_STEP_SUMMARY"
           echo "Signature/notarization mode: ${{ steps.mode.outputs.mode }}" >> "$GITHUB_STEP_SUMMARY"
           echo "The DMG was published as a GitHub prerelease and uploaded as a workflow artifact." >> "$GITHUB_STEP_SUMMARY"
-          echo "This is a manual prerelease channel; the stable Sparkle feed was not changed." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.mode.outputs.publish_feed }}" == "true" ]]; then
+            echo "The signed update archive and appcast were published; the in-app updater will offer this preview automatically." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "This is a manual prerelease channel; the Sparkle feed was not changed." >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [[ "${{ steps.mode.outputs.mode }}" == "developer-preview" || "${{ steps.mode.outputs.mode }}" == "signed-unnotarized" ]]; then
             echo "macOS may require System Settings → Privacy & Security → Open Anyway after the first blocked launch." >> "$GITHUB_STEP_SUMMARY"
           fi

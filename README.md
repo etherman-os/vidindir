@@ -80,16 +80,17 @@ before activation, with the previous working version retained for rollback.
 ### Vidindir app updates
 
 Vidindir checks for app updates in the background. Every update is verified
-before installation, and the app waits for active downloads and engine work to
-finish before restarting. The public update channel will remain empty until the
-first release passes its qualification checks.
-
-GitHub prereleases are not offered through the stable automatic-update channel.
-Anyone testing a prerelease should install a newer preview manually.
+against Vidindir's signed update feed before installation, and the app waits
+for active downloads and engine work to finish before restarting. Developer
+Preview builds also receive new previews automatically through the same
+verified channel, so testers never have to reinstall by hand. The stable
+update channel begins once the first stable release passes its qualification
+checks.
 
 macOS may block a preview build the first time it is opened. If you trust the
 download, try to open it once, then go to **System Settings → Privacy & Security**
-and choose **Open Anyway**.
+and choose **Open Anyway**. Updates installed by the in-app updater do not
+trigger this prompt again.
 
 ## Supported websites
 

@@ -36,11 +36,13 @@ fi
 
 publish_stable="false"
 publish_prerelease="false"
+publish_feed="false"
 
 if [[ "$signed" == "true" && "$notarization_configured" == "true" ]]; then
   mode="notarized"
   if [[ "$sparkle_key_configured" == "true" ]]; then
     publish_stable="true"
+    publish_feed="true"
     dmg_name="$app_slug-$version-macOS-$architecture.dmg"
   else
     publish_prerelease="true"
@@ -49,6 +51,9 @@ if [[ "$signed" == "true" && "$notarization_configured" == "true" ]]; then
 elif [[ "$signed" == "true" ]]; then
   mode="signed-unnotarized"
   publish_prerelease="true"
+  if [[ "$sparkle_key_configured" == "true" ]]; then
+    publish_feed="true"
+  fi
   dmg_name="$app_slug-$version-macOS-$architecture-signed-unnotarized.dmg"
 elif [[ "$require_developer_id" == "true" ]]; then
   mode="missing-developer-id"
@@ -56,10 +61,14 @@ elif [[ "$require_developer_id" == "true" ]]; then
 else
   mode="developer-preview"
   publish_prerelease="true"
+  if [[ "$sparkle_key_configured" == "true" ]]; then
+    publish_feed="true"
+  fi
   dmg_name="$app_slug-$version-macOS-$architecture-developer-preview.dmg"
 fi
 
 printf 'mode=%s\n' "$mode"
 printf 'publish_stable=%s\n' "$publish_stable"
 printf 'publish_prerelease=%s\n' "$publish_prerelease"
+printf 'publish_feed=%s\n' "$publish_feed"
 printf 'dmg_name=%s\n' "$dmg_name"
