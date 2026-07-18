@@ -48,7 +48,7 @@ jobs:
               "dist/Vidindir.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc/Contents/MacOS/Installer"
             )
             for executable in "${universal_executables[@]}"; do
-              /usr/bin/lipo -verify_arch arm64 x86_64 "$executable"
+              /usr/bin/lipo "$executable" -verify_arch arm64 x86_64
             done
           else
             ./Scripts/package_app.sh

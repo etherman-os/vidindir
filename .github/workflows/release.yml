@@ -117,8 +117,8 @@ jobs:
           app_file_stem="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
           app_slug="$(printf '%s' "$app_file_stem" | /usr/bin/sed 's/[^A-Za-z0-9._-]/-/g')"
           app_slug="${app_slug:-App}"
-          /usr/bin/lipo -verify_arch arm64 x86_64 \
-            "$app_path/Contents/MacOS/$app_file_stem"
+          /usr/bin/lipo "$app_path/Contents/MacOS/$app_file_stem" \
+            -verify_arch arm64 x86_64
           universal_executables=(
             "$app_path/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
             "$app_path/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
@@ -127,7 +127,7 @@ jobs:
             "$app_path/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc/Contents/MacOS/Installer"
           )
           for executable in "${universal_executables[@]}"; do
-            /usr/bin/lipo -verify_arch arm64 x86_64 "$executable"
+            /usr/bin/lipo "$executable" -verify_arch arm64 x86_64
           done
           build_arch="universal2"
 
