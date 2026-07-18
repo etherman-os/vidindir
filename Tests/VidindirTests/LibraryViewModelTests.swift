@@ -31,7 +31,7 @@ struct LibraryViewModelTests {
         #expect(saved.title == "Resolved Video")
         #expect(saved.creator == "Etherman")
         #expect(saved.durationSeconds == 95)
-        #expect(model.items.map(\.id) == [saved.id])
+        try await eventually { model.items.map(\.id) == [saved.id] }
         #expect(model.items.first?.mediaItem.metadataStatus == .resolved)
     }
 
