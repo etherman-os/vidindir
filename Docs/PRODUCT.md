@@ -1,7 +1,7 @@
 # Vidindir Product Plan
 
 **Status:** Working roadmap
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-18
 **Product source of truth:** This roadmap and the maintained architecture specifications
 
 ## Purpose
@@ -16,18 +16,25 @@ The first public release focuses on the complete personal loop. Shared discussio
 
 ## Current status
 
-Vidindir is currently a focused native SwiftUI download prototype. It is useful as a Developer Preview and as evidence that the basic local download interaction can work. It is not yet the personal media library described by this roadmap, and it is not ready to be positioned as Public V1.
+Vidindir is currently a native, local-first personal media library and downloader in pre-release development. The core personal library is real and backed by SQLite/GRDB; the build is not ready to be positioned as Public V1 until the remaining queue, sync, managed-engine, and release-distribution gates pass.
 
-### Implemented in the current prototype
+### Implemented in the current build
 
-- A native SwiftUI macOS window
-- Paste and validate one HTTP or HTTPS media link
-- MP4 video and MP3 audio choices
+- A native SwiftUI macOS shell with sidebar, toolbar, optional inspector, Settings, and keyboard commands
+- Inbox, Library, Favorites, Collections, global search, and grid/list/compact presentation
+- Save-only and download-now Quick Add flows with duplicate detection and collection destinations
+- Clipboard URL suggestions plus URL drag and drop onto the app and collections
+- Product-owned Workspace, MediaItem, Collection, Favorite, LocalAsset, and DownloadJob models
+- SQLite/GRDB persistence, migrations, WAL/foreign-key safety, FTS5 search, tombstones, change journal, sync inbox, and endpoint outbox boundaries
+- Canonicalization for YouTube, X/Twitter, Vimeo, and safe generic URLs
+- Structured metadata preview for title, creator, duration, thumbnail, and stable source identity
+- MP4 video and MP3 audio choices with Best, 1080p, and 720p quality presets
 - A separately remembered destination folder for each format
 - yt-dlp command construction with structured progress and final-path events
 - FFmpeg-backed merge or audio conversion through yt-dlp
 - Live progress, speed, estimated time remaining, cancellation, and Finder reveal
-- A small local download history stored in user defaults
+- Durable download jobs and device-aware local assets, including verified completion and relaunch recovery of interrupted work
+- An idempotent, evidence-preserving import of legacy `UserDefaults` history into the database
 - Detection of yt-dlp, FFmpeg, and Deno
 - User-initiated installation of missing tools through Homebrew when Homebrew is present
 - Daily background maintenance for Homebrew-managed yt-dlp, FFmpeg, and Deno formulae, with shorter retries after failure
@@ -37,29 +44,21 @@ Vidindir is currently a focused native SwiftUI download prototype. It is useful 
 - Process execution without passing a pasted URL through a shell
 - Product-owned `DownloadBackend` and `DownloadEngineManaging` contracts with yt-dlp behind an adapter
 - Swift 6 language mode with a macOS 15 deployment target
-- Unit tests around command construction, binary discovery, event decoding, process framing, preferences, and tool setup
+- Unit and integration tests around domain identity, canonicalization, persistence, migrations, state transitions, metadata, command construction, process safety, preferences, engine maintenance, and a 10,000-item library
 - Basic packaging and continuous-integration scripts
 
 ### Partial or Developer Preview quality
 
-- Source support is inherited from yt-dlp, so some non-YouTube links may work, but Vidindir has no product-level compatibility catalog, metadata preview, or support guarantee.
+- Source support and metadata extraction are inherited from yt-dlp. Vidindir provides no permanent compatibility guarantee because source websites change independently.
 - Packaging produces an ad-hoc-signed app and a verified drag-to-Applications DMG; a public release still requires Developer ID signing and notarization.
 - Errors and logs exist, but the product-level error taxonomy and recovery experience are incomplete.
-- History records downloads, but it is not a MediaItem library and does not establish durable local-asset tracking.
-- The current package uses the intended Swift 6 and macOS 15 baseline, but remains a single-package prototype rather than the planned Tuist and multi-module workspace.
+- Durable jobs are connected to the live single-download path, but full coordinator-owned pause/resume, persisted retry execution, ordering, and configurable concurrency remain incomplete.
+- Domain and Persistence are separate Swift package targets. The remaining feature and engine modules have not all moved to the final Tuist workspace shape.
 
 ### Not implemented yet
 
-- Inbox, Library, Favorites, Collections, tags, or global search
-- Workspace-based domain records
-- SQLite and GRDB persistence, migrations, or change journal
-- URL canonicalization and product-level duplicate detection
-- Save-only behavior independent of download
-- Metadata preview and simple quality selection
 - Playlist or batch capture
-- A persistent multi-job queue, concurrency control, pause, retry, or restart recovery
-- Device-aware LocalAsset records and file verification
-- Clipboard suggestions, drag and drop, or broader capture integrations
+- Full persistent multi-job scheduling, concurrency control, pause/resume, and retry execution
 - iCloud or any other sync provider
 - Signed, versioned engine packs with integrity verification, atomic activation, retention, and rollback
 - A public installation path that does not require Homebrew or Terminal
@@ -67,7 +66,7 @@ Vidindir is currently a focused native SwiftUI download prototype. It is useful 
 
 ### Honest release label
 
-The correct current label is **pre-release Developer Preview prototype**. The Homebrew-backed tool setup is intentionally not the intended Public V1 engine experience. Public V1 must be a signed, notarized application that can prepare and update its verified engine without asking an ordinary user to install Homebrew, use Terminal, run pip, or edit PATH.
+The correct current label is **pre-release Developer Preview**. The Homebrew-backed tool setup is intentionally not the intended Public V1 engine experience. Public V1 must be a signed, notarized application that can prepare and update its verified engine without asking an ordinary user to install Homebrew, use Terminal, run pip, or edit PATH.
 
 ## Product outcomes
 
@@ -161,7 +160,7 @@ Foundation is complete only when the prototype remains stable and the new librar
 
 ### Current milestone status
 
-**In progress.** The single-download core, backend adapter boundary, Swift 6/macOS 15 baseline, safety tests, and foundation documents exist. The broader module split, domain persistence, public engine distribution, and production signing are not yet complete.
+**Complete.** The hardened single-download core, backend adapter boundary, Swift 6/macOS 15 baseline, foundation documents, Domain/Persistence modules, durable library migration, and deterministic safety tests exist. Remaining Public V1 work is tracked under Milestone 1 rather than extending the foundation indefinitely.
 
 ### Non-goals for this milestone
 

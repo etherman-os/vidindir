@@ -378,19 +378,18 @@ Needs Attention
 
 Technical logs include endpoint-local opaque IDs, entity type, hashed entity ID where useful, counts, batch latency, cursor reset, retry category, and result. They exclude record payloads and source URLs. A user-initiated diagnostic export has an explicit schema and redaction tests.
 
-## 16. Current prototype migration
+## 16. Current implementation and migration
 
-The current prototype has no SQLite database, provider, account UI, syncable workspace, tombstones, change journal, inbox, or outbox. Its `UserDefaults` history must first migrate into the data model described in `DATA_MODEL.md`.
+The current build has the provider-neutral local foundation: SQLite/GRDB records, a Personal Workspace, deterministic identifiers, revision metadata, tombstones, an atomic local change journal, endpoint outbox seeding, a durable remote inbox boundary, and an idempotent legacy-history import. It does not yet have `SyncCore`, a CloudKit provider, account/status UI, or enabled network synchronization.
 
 Implementation order:
 
-1. Land Domain IDs/version stamps and Persistence transactions with sync disabled.
-2. Append journal/outbox entries to a fake endpoint and prove transaction/allow-list behavior.
-3. Build `SyncCore` against deterministic in-memory `SyncProvider` and fault-injecting `SyncStore` tests.
-4. Add durable inbox/cursor and crash-replay tests.
-5. Implement CloudKit mapping behind the provider protocol.
-6. Add entitlements, development-container schema deployment, signed-in manual tests, account-change tests, and production promotion procedure.
-7. Gate sync behind a feature flag until initial-sync, token-expiry, malformed-record, offline, clock-skew, and destructive-path acceptance tests pass.
+1. Keep sync disabled while the landed Domain/Persistence contracts remain covered by migration, transaction, allow-list, tombstone, and outbox tests.
+2. Build `SyncCore` against deterministic in-memory `SyncProvider` and fault-injecting `SyncStore` tests.
+3. Complete cursor/checkpoint semantics and crash-replay tests around the existing durable inbox.
+4. Implement CloudKit mapping behind the provider protocol.
+5. Add entitlements, development-container schema deployment, signed-in manual tests, account-change tests, and production promotion procedure.
+6. Gate sync behind a feature flag until initial-sync, token-expiry, malformed-record, offline, clock-skew, and destructive-path acceptance tests pass.
 
 Do not add CloudKit calls to the existing `AppModel` or SwiftUI views as an intermediate shortcut. The first provider code must enter through `SyncProvider`.
 

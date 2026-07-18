@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var selectedFormat: DownloadFormat
+    @Published private(set) var selectedQuality: DownloadQuality
     @Published private(set) var destinationDirectory: URL
     @Published private(set) var engineStatus: DownloadEngineStatus
     @Published private(set) var phase: DownloadPhase = .idle
@@ -45,7 +46,9 @@ final class AppModel: ObservableObject {
     private let historyStore: DownloadHistoryStore
     private let defaults: UserDefaults
     private let engineUpdateSchedule: EngineUpdateSchedule
+    private let durableDownloads: DurableDownloadRecorder?
     private var downloadTask: Task<Void, Never>?
+    private var persistenceEventTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
     private var installOperationID: UUID?
     private var engineUpdateTask: Task<Void, Never>?
@@ -61,7 +64,8 @@ final class AppModel: ObservableObject {
         preferences: DownloadPreferencesStore = DownloadPreferencesStore(),
         historyStore: DownloadHistoryStore = DownloadHistoryStore(),
         defaults: UserDefaults = .standard,
-        engineUpdateSchedule: EngineUpdateSchedule = .hourly
+        engineUpdateSchedule: EngineUpdateSchedule = .hourly,
+        durableDownloads: DurableDownloadRecorder? = nil
     ) {
         self.downloadBackend = downloadBackend
         self.engineManager = engineManager
@@ -69,9 +73,11 @@ final class AppModel: ObservableObject {
         self.historyStore = historyStore
         self.defaults = defaults
         self.engineUpdateSchedule = engineUpdateSchedule
+        self.durableDownloads = durableDownloads
 
         let format = preferences.selectedFormat
         selectedFormat = format
+        selectedQuality = preferences.quality(for: format)
         destinationDirectory = preferences.destinationDirectory(for: format)
         engineStatus = engineManager.currentStatus()
         history = historyStore.load()
@@ -80,6 +86,7 @@ final class AppModel: ObservableObject {
 
     deinit {
         downloadTask?.cancel()
+        persistenceEventTask?.cancel()
         installTask?.cancel()
         engineUpdateTask?.cancel()
         engineUpdateSchedulerTask?.cancel()
@@ -173,7 +180,14 @@ final class AppModel: ObservableObject {
         guard !phase.isBusy, format != selectedFormat else { return }
         selectedFormat = format
         preferences.selectedFormat = format
+        selectedQuality = preferences.quality(for: format)
         destinationDirectory = preferences.destinationDirectory(for: format)
+    }
+
+    func selectQuality(_ quality: DownloadQuality) {
+        guard !phase.isBusy, quality != selectedQuality else { return }
+        selectedQuality = quality
+        preferences.setQuality(quality, for: selectedFormat)
     }
 
     func pasteFromClipboard() {
@@ -221,6 +235,7 @@ final class AppModel: ObservableObject {
             request = try DownloadRequest(
                 urlString: linkText,
                 format: selectedFormat,
+                quality: selectedQuality,
                 destinationDirectory: destinationDirectory
             )
             try request.validateForDownload()
@@ -258,20 +273,45 @@ final class AppModel: ObservableObject {
         )
 
         let backend = downloadBackend
-        downloadTask = Task { [weak self, backend] in
+        let durableDownloads = durableDownloads
+        downloadTask = Task { [weak self, backend, durableDownloads] in
             do {
-                _ = try await backend.download(request) { [weak self] event in
+                if let durableDownloads {
+                    try await durableDownloads.begin(request)
+                }
+                let completedRecord = try await backend.download(request) { [weak self] event in
                     Task { @MainActor [weak self] in
+                        if durableDownloads != nil {
+                            self?.recordDurableEvent(event)
+                            if case .completed = event {
+                                return
+                            }
+                        }
                         self?.handleDownloadEvent(event)
                     }
                 }
+                if let durableDownloads {
+                    if let pendingPersistence = self?.persistenceEventTask {
+                        await pendingPersistence.value
+                    }
+                    try await durableDownloads.complete(completedRecord)
+                    guard let self else { return }
+                    self.persistenceEventTask = nil
+                    self.handleDownloadEvent(.completed(completedRecord))
+                }
             } catch is CancellationError {
+                await durableDownloads?.cancel()
                 guard let self else { return }
+                self.persistenceEventTask?.cancel()
+                self.persistenceEventTask = nil
                 if self.phase.isBusy {
                     self.handleDownloadEvent(.cancelled)
                 }
             } catch {
+                await durableDownloads?.fail(error)
                 guard let self else { return }
+                self.persistenceEventTask?.cancel()
+                self.persistenceEventTask = nil
                 if self.phase.isBusy {
                     self.finishFailure(error.localizedDescription)
                 }
@@ -286,6 +326,8 @@ final class AppModel: ObservableObject {
         guard phase.isBusy else { return }
         downloadBackend.cancelCurrentDownload()
         downloadTask?.cancel()
+        let durableDownloads = durableDownloads
+        Task { await durableDownloads?.cancel() }
         phase = .cancelled
         finishActiveRecord(status: .cancelled)
     }
@@ -509,6 +551,27 @@ final class AppModel: ObservableObject {
                 phase = .cancelled
                 finishActiveRecord(status: .cancelled)
             }
+        }
+    }
+
+    private func recordDurableEvent(_ event: DownloadBackendEvent) {
+        guard let durableDownloads else { return }
+        let previous = persistenceEventTask
+        switch event {
+        case .progress(let progress):
+            persistenceEventTask = Task {
+                await previous?.value
+                guard !Task.isCancelled else { return }
+                await durableDownloads.recordProgress(progress)
+            }
+        case .postProcessing:
+            persistenceEventTask = Task {
+                await previous?.value
+                guard !Task.isCancelled else { return }
+                await durableDownloads.recordPostProcessing()
+            }
+        default:
+            break
         }
     }
 

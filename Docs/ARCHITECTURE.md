@@ -333,30 +333,30 @@ Minimum architecture acceptance tests:
 
 Network integration tests against real source sites and CloudKit run in separate, opt-in suites because they are slower, mutable, and may require credentials. Unit CI must be deterministic and offline.
 
-## 15. Current prototype migration
+## 15. Current implementation and migration
 
-As of this foundation document, the repository is a useful downloader prototype with these characteristics:
+The repository has crossed the library-persistence foundation and currently has these characteristics:
 
-- One SwiftPM executable target, `Vidindir`, and one test target.
+- A SwiftPM executable plus separate `VidindirDomain` and `VidindirPersistence` targets with dedicated persistence tests.
 - Swift tools 6.0, Swift 6 language mode, and a macOS 15 deployment target.
-- SwiftUI views and a large `@MainActor AppModel` still compose UI, one active download, preferences, and history, but the model now depends on application-owned `DownloadBackend` and `DownloadEngineManaging` contracts.
-- `DownloadRecord` history is capped and encoded into `UserDefaults`.
+- A native SwiftUI library shell presents Inbox, Library, Favorites, Collections, Downloads, search, Quick Add, inspector, Settings, clipboard capture, and drag and drop.
+- `LibraryViewModel` owns feature-facing library state while `AppModel` retains the current one-active-download execution bridge. Both depend on application-owned contracts rather than yt-dlp types.
+- SQLite/GRDB is authoritative for media, organization, durable download jobs, local assets, tombstones, FTS search, and sync journal/inbox/outbox boundaries.
+- Legacy `DownloadRecord` JSON is imported once and retained as migration evidence; it is no longer the authoritative download history.
 - MP4/MP3 destinations use per-format security-scoped bookmarks in `UserDefaults`.
-- `YTDLPBackend` translates `YTDLPDownloadService` events into backend-neutral app events. `YTDLPCommandBuilder`, `YTDLPEventDecoder`, `SubprocessRunner`, and `ArtifactResolver` already demonstrate safe argument passing and structured progress events.
+- `YTDLPBackend` translates `YTDLPDownloadService` events into backend-neutral app events. Metadata resolution and download execution use structured yt-dlp output, direct arguments, bounded subprocess capture, and verified artifact containment.
 - `HomebrewDownloadEngineManager` places current Homebrew preparation behind the engine-management contract; it is not yet a managed/versioned EngineKit implementation.
 - Required tools are discovered in the app bundle, common paths, or `PATH`; missing tools can be installed with Homebrew.
 - Packaging creates an ad-hoc-signed `.app` inside a checksum-verified, locally unsigned DMG and does not bundle engine binaries.
 
-Migration must be incremental and keep the prototype buildable:
+Remaining migration must stay incremental and keep the application buildable:
 
-1. Keep the established macOS 15/Swift 6 baseline, complete the strict-concurrency audit (especially every `@unchecked Sendable`), and preserve the passing prototype tests.
-2. Introduce Tuist and internal module targets without changing behavior. Evolve the current application-owned contracts into `Domain`/`DownloadCore`, then move process code to `DownloadYTDLP` and system adapters to `SystemIntegration`.
-3. Add GRDB and migrations. Create a personal workspace, import the current `UserDefaults` history once into `DownloadJob`/`LocalAsset` where evidence is sufficient, and retain preference/bookmark values. Mark the import with a durable migration key so it is idempotent.
-4. Replace the current single-download `DownloadBackend` surface and state in `AppModel` with the richer `DownloadCore` execution contract and `DownloadCoordinator`; keep `YTDLPBackend` as the adapter while adding queue features.
-5. Introduce library features and persistence observation. A downloaded historical record may create a `MediaItem` only when its source URL is valid; a missing output file must not create a healthy `LocalAsset`.
-6. Implement `EngineKit` and a verified distribution decision. Keep Homebrew discovery as a development/explicit fallback until the signed engine-pack path meets release and licensing requirements.
-7. Add provider-neutral `SyncCore`, then CloudKit. Sync remains disabled until schema, entitlement, account-change, and destructive-recovery tests pass.
-8. Remove legacy `UserDefaults` download history only after an observed release has migrated it successfully. Preference storage can remain where appropriate.
+1. Preserve the established macOS 15/Swift 6 baseline and passing deterministic tests while completing the remaining strict-concurrency audit.
+2. Move the current application-owned execution contracts into `DownloadCore`; replace the one-active-download bridge with an actor-backed persistent `DownloadCoordinator` supporting scheduling, pause/resume, retry, and concurrency limits.
+3. Split remaining process, system-integration, and feature code into the documented package/Tuist boundaries without rewriting proven subprocess/event internals solely to match folder names.
+4. Implement `EngineKit` and the verified distribution decision. Keep Homebrew as a clearly labelled preview fallback until signed engine packs pass clean-machine, rollback, licensing, and notarization checks.
+5. Implement provider-neutral `SyncCore`, then CloudKit. Sync remains disabled until schema, entitlement, account-change, offline, and destructive-recovery tests pass.
+6. Remove the retained legacy `UserDefaults` download history only after an observed public migration window. Preference storage can remain where appropriate.
 
 Do not rewrite working subprocess/event code merely to match folder names. First wrap it in the target interfaces, add contract tests, and then improve internals independently.
 

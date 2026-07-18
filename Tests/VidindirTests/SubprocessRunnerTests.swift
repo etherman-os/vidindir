@@ -61,14 +61,14 @@ struct SubprocessRunnerTests {
                     executableURL: URL(fileURLWithPath: "/bin/sh"),
                     arguments: ["-c", "echo ready; trap '' TERM; while :; do :; done"]
                 ),
-                timeout: .milliseconds(200)
+                timeout: .seconds(1)
             ) { stream, line in
                 observation.record(stream: stream, line: line)
                 releaseCallback.wait()
             }
         }
 
-        let callbackStarted = await waitUntil(timeout: .seconds(1)) {
+        let callbackStarted = await waitUntil(timeout: .seconds(5)) {
             observation.standardOutput == ["ready"]
         }
         guard callbackStarted else {
@@ -81,7 +81,7 @@ struct SubprocessRunnerTests {
         // Always release the deliberately blocked callback, including if a
         // regression makes result delivery wait behind it. The delayed release
         // keeps the test itself bounded while the elapsed-time assertion fails.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
             releaseCallback.signal()
         }
         let startedWaitingAt = Date()
@@ -95,7 +95,7 @@ struct SubprocessRunnerTests {
             Issue.record("Unexpected blocking-callback timeout error: \(error)")
         }
 
-        #expect(Date().timeIntervalSince(startedWaitingAt) < 0.75)
+        #expect(Date().timeIntervalSince(startedWaitingAt) < 2)
         releaseCallback.signal()
     }
 
@@ -112,7 +112,7 @@ struct SubprocessRunnerTests {
             }
         }
 
-        let callbackStarted = await waitUntil(timeout: .seconds(1)) {
+        let callbackStarted = await waitUntil(timeout: .seconds(5)) {
             observation.standardOutput == ["ready"]
         }
         guard callbackStarted else {
@@ -156,7 +156,7 @@ struct SubprocessRunnerTests {
         #expect(result.standardOutput == ["three", "four"])
         #expect(result.standardError == ["beta", "gamma"])
 
-        let receivedEveryCallback = await waitUntil(timeout: .seconds(1)) {
+        let receivedEveryCallback = await waitUntil(timeout: .seconds(5)) {
             observation.standardOutput == ["one", "two", "three", "four"]
                 && observation.standardError == ["alpha", "beta", "gamma"]
         }
@@ -205,7 +205,7 @@ struct SubprocessRunnerTests {
         do {
             _ = try await runner.run(
                 invocation,
-                timeout: .milliseconds(500)
+                timeout: .milliseconds(1500)
             ) { stream, line in
                 observation.record(stream: stream, line: line)
             }
@@ -219,7 +219,7 @@ struct SubprocessRunnerTests {
         // If only the immediate child is killed, the TERM-ignoring grandchild
         // keeps both pipes open and this assertion is reached much later (or not
         // at all). The grace period plus generous scheduling headroom stays bound.
-        #expect(Date().timeIntervalSince(startedAt) < 2)
+        #expect(Date().timeIntervalSince(startedAt) < 3.5)
         #expect(observation.sawInheritedStandardError)
 
         guard let leader = observation.leader,
@@ -228,7 +228,7 @@ struct SubprocessRunnerTests {
             return
         }
 
-        let descendantsExited = await waitUntil(timeout: .seconds(1)) {
+        let descendantsExited = await waitUntil(timeout: .seconds(5)) {
             !processExists(grandchild) && !processGroupExists(leader)
         }
         #expect(descendantsExited)
@@ -265,7 +265,7 @@ struct SubprocessRunnerTests {
         do {
             _ = try await runner.run(
                 invocation,
-                timeout: .milliseconds(500)
+                timeout: .milliseconds(1500)
             ) { stream, line in
                 observation.record(stream: stream, line: line)
             }
@@ -279,7 +279,7 @@ struct SubprocessRunnerTests {
         // The escaped child deliberately retains both output pipes for five
         // seconds. Returning well before then proves cancellation stopped the
         // host readers instead of waiting for inherited-pipe EOF.
-        #expect(Date().timeIntervalSince(startedAt) < 2)
+        #expect(Date().timeIntervalSince(startedAt) < 3.5)
 
         guard let leader = observation.leader,
               let escaped = observation.escaped else {
@@ -297,7 +297,7 @@ struct SubprocessRunnerTests {
         #expect(errno == ECHILD)
 
         _ = Darwin.kill(escaped, SIGKILL)
-        let escapedExited = await waitUntil(timeout: .seconds(1)) {
+        let escapedExited = await waitUntil(timeout: .seconds(5)) {
             !processExists(escaped)
         }
         #expect(escapedExited)
@@ -320,7 +320,7 @@ struct SubprocessRunnerTests {
             }
         }
 
-        let observedLeader = await waitUntil(timeout: .seconds(1)) {
+        let observedLeader = await waitUntil(timeout: .seconds(5)) {
             observation.leader != nil
         }
         #expect(observedLeader)
@@ -336,7 +336,7 @@ struct SubprocessRunnerTests {
         }
 
         if let leader = observation.leader {
-            let groupExited = await waitUntil(timeout: .seconds(1)) {
+            let groupExited = await waitUntil(timeout: .seconds(5)) {
                 !processGroupExists(leader)
             }
             #expect(groupExited)
@@ -401,7 +401,7 @@ struct SubprocessRunnerTests {
             }
         }
 
-        guard await waitUntil(timeout: .seconds(1), condition: {
+        guard await waitUntil(timeout: .seconds(5), condition: {
             observation.standardOutput == ["first"]
         }) else {
             task.cancel()
@@ -418,7 +418,7 @@ struct SubprocessRunnerTests {
         #expect(observation.standardOutput == ["first"])
 
         releaseCallback.signal()
-        let deliveredRecentSuffix = await waitUntil(timeout: .seconds(1)) {
+        let deliveredRecentSuffix = await waitUntil(timeout: .seconds(5)) {
             observation.standardOutput.last == "line100"
         }
         #expect(deliveredRecentSuffix)

@@ -1044,7 +1044,7 @@ private struct FreshInstallEngineFixture {
             includeBundledTools: false
         )
 
-        let copyCommands = ToolBinary.allCases.map { tool in
+        let copyCommands = ToolBinary.allCases.map { tool -> String in
             let source = templatesDirectory.appendingPathComponent(tool.rawValue).path
             let destination = toolsDirectory.appendingPathComponent(tool.rawValue).path
             return "/bin/cp \(shellQuote(source)) \(shellQuote(destination))"
