@@ -593,7 +593,7 @@ The first production migration performs a one-time import:
 6. Preserve existing selected-format and destination bookmarks. A raw legacy history path does not grant access; request permission again when needed.
 7. Record an idempotent import marker in a dedicated migration-state table. Leave the legacy JSON intact for one observed release, then remove it in a later migration.
 
-Existing `DownloadFormat.mp4/mp3` maps to backend-neutral `(mediaKind: video, container: mp4)` and `(mediaKind: audio, container: mp3)`. Existing `DownloadStatus.preparing` maps to `resolving`; other terminal states map by name where possible.
+Existing `DownloadFormat.mp4/mp3` maps to backend-neutral `(mediaKind: video, container: mp4)` and `(mediaKind: audio, container: mp3)`. Existing in-flight `preparing`, `downloading`, and `postProcessing` records map to `interrupted`; terminal states map by name where possible. A legacy `completed` record without a verifiable local file also maps to `interrupted` with a file-missing reason, because a completed job may not be invented without an available `LocalAsset`.
 
 ## 13. Acceptance tests
 
