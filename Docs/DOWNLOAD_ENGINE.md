@@ -467,29 +467,31 @@ User UI shows a concise explanation and actions (`Retry`, `Choose Folder`, `Upda
 
 Before starting and during large transfers, the coordinator checks available capacity when practical. Disk-full or permission failure preserves the library and recoverable partial state; it does not mark completion.
 
-## 16. Current prototype migration
+## 16. Current implementation and migration
 
 The current prototype already has valuable seams:
 
 - `DownloadBackend` and backend-neutral app events prevent `AppModel` from consuming yt-dlp event types directly.
 - `DownloadEngineManaging` separates engine readiness/preparation from downloads; `HomebrewDownloadEngineManager` is the current Developer Preview implementation.
-- `AppModel` is injected with those two application-owned contracts, although the prototype contract still permits only one active download.
+- `AppModel` is injected with those two application-owned contracts, while `DurableDownloadRecorder` bridges the current one-active-download execution path into persistent jobs and local assets.
 - `YTDLPCommandBuilder` uses absolute tool URLs, `--ignore-config`, typed arguments, and `--` before the source URL.
 - `YTDLPEventDecoder` consumes a sentinel plus JSON and tolerates lossy numeric fields.
 - `ByteLineFramer`, `SubprocessRunner`, and `YTDLPDownloadService` concurrently drain process output.
 - `ArtifactResolver` rejects reported artifacts outside the selected destination.
-- `DownloadPreferencesStore` remembers separate MP4/MP3 security-scoped folders.
+- `DownloadPreferencesStore` remembers separate MP4/MP3 security-scoped folders and quality presets.
 - `BinaryLocator` finds bundled, Homebrew, system, and `PATH` tools.
 - `ToolInstallService` can explicitly ask Homebrew to install yt-dlp, FFmpeg, and Deno.
-- The underlying `YTDLPDownloadService` allows only one in-memory active download; history is a small `UserDefaults` JSON list.
+- `MediaMetadataResolver` consumes bounded structured yt-dlp JSON independently from execution.
+- GRDB persists validated `DownloadJob` transitions and device-aware `LocalAsset` evidence. Relaunch converts genuinely in-flight work to `interrupted`; legacy `UserDefaults` history has an idempotent evidence-preserving importer.
+- The underlying `YTDLPDownloadService` still allows only one in-memory active execution; persistent scheduling, pause/resume, and retry execution are the next coordinator boundary.
 
 Migration sequence:
 
-1. Evolve the current `DownloadBackend` request/event/error seam into `DownloadCore` while adapter tests keep current behavior.
+1. Move the current `DownloadBackend` request/event/error seam into `DownloadCore` while adapter tests keep current behavior.
 2. Move the already existing `YTDLPBackend`, command builder, decoder, artifact adapter, and process execution into their own target; add protocol version to structured events while accepting the legacy sentinel schema during one migration window.
 3. Replace lock-based single execution with an actor-backed execution/process supervisor. Add process-group cancellation, output limits, symlink-aware containment, and exactly-once completion tests.
-4. Add GRDB `DownloadJob` persistence and `DownloadCoordinator`; bridge current MP4/MP3 intents and import legacy history per `DATA_MODEL.md`.
-5. Separate metadata resolution from execution, then add queue, retry, playlist/batch expansion, and restart reconciliation.
+4. Replace the durable single-execution bridge with `DownloadCoordinator`; add execution leasing, queue concurrency, pause/resume, retry, and persisted backoff without weakening the existing state-machine rules.
+5. Add playlist/batch expansion and restart-safe automatic reconciliation on top of the coordinator. Metadata resolution is already separate from execution.
 6. Introduce `MediaProcessing` capability ownership while allowing yt-dlp to call the supplied FFmpeg path.
 7. Introduce EngineKit in shadow mode: discover/verify/report a candidate without activating it. Complete signed-pack, sandbox, notarization, and licensing decisions before self-managed activation.
 8. Retain explicit Homebrew fallback for development and migration. Remove mandatory Homebrew only after managed packs work on clean macOS 15 Intel/Apple Silicon accounts in signed/notarized builds.

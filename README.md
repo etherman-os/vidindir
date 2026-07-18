@@ -1,8 +1,10 @@
 # Vidindir
 
-Vidindir is a native, open-source macOS app for downloading public video and
-audio links. Paste a link, choose MP4 or MP3, choose where to save it, and let
-the app handle the download locally.
+Vidindir is a native, open-source media library and downloader for macOS. Save
+video links before they disappear, organize them into collections, find them
+later, and download a local MP4 or MP3 whenever you need it.
+
+> **Save. Organize. Find. Download.**
 
 [![CI](https://github.com/etherman-os/vidindir/actions/workflows/ci.yml/badge.svg)](https://github.com/etherman-os/vidindir/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-4f8f8b.svg)](LICENSE)
@@ -12,37 +14,42 @@ Built by [etherman-os](https://github.com/etherman-os) · [etherman.org](https:/
 
 ## Project status
 
-Vidindir is in pre-release development. There is no stable end-user release yet;
-the first stable GitHub release is being held until the Public V1 experience is
-ready. Tagged test builds may appear under GitHub Releases as clearly labelled
-prereleases.
+Vidindir is in active pre-release development. The native library is already in
+place, but there is no stable end-user release yet. We are holding the first
+release until installation, engine packaging, queue controls, and cross-device
+sync meet the same standard as the core library.
 
-The downloader foundation works today. It includes MP4 and MP3 downloads,
-remembered destination folders, progress and speed reporting, cancellation,
-recent-download history, Finder reveal, engine preparation, and automatic
-engine maintenance. The app is native SwiftUI rather than an Electron or web
-wrapper.
+The current build includes:
 
-The broader library experience is still under development. Public V1 is intended
-to make Vidindir a personal, local-first home for media links: save links to an
-inbox, organize them into collections, search and find them later, manage a
-persistent download queue, track which files exist on the current Mac, and sync
-lightweight library data between Macs. The actual downloaded media will remain
-on the user's device.
+- A local-first Inbox, Library, Favorites, Collections, and instant search
+- Grid, list, and compact views with a native macOS inspector
+- Save-only and download-now flows from the same Quick Add window
+- MP4 video and MP3 audio with Best, 1080p, and 720p choices
+- Link metadata previews, duplicate detection, and canonical URLs
+- Durable SQLite storage for media, collections, downloads, and local files
+- Restart-safe download history, progress, cancellation, and Finder reveal
+- Clipboard link suggestions and drag-and-drop capture
+- Remembered download folders and automatic engine maintenance
+- Automatic application-update checks through a signed update feed
+- No account, advertising, analytics, or tracking
+
+Downloaded files stay on the Mac. The library remains useful even when a file
+has not been downloaded or the download engine is unavailable.
 
 ## Using the current preview
 
-Once a contributor build is running:
+Once a preview build is running:
 
-1. Paste a public video or audio link.
-2. Choose **MP4** for video or **MP3** for audio.
-3. Choose a destination folder. Vidindir remembers a different folder for each
-   format.
-4. Select **Download**.
+1. Press <kbd>⌘L</kbd> or choose **Add Link**.
+2. Paste a supported public media link.
+3. Choose Inbox, Library, or one of your Collections.
+4. Select **Save only** or **Download now**.
+5. For a download, choose Video or Audio, quality, and a destination folder.
 
-Vidindir shows progress, transfer speed, estimated time remaining, and technical
-details. An active download can be cancelled, and a completed file can be shown
-in Finder.
+Saved links are available immediately in the local library. Vidindir resolves a
+title, creator, duration, and thumbnail when the source provides them. Downloads
+show progress, speed, estimated time remaining, and optional technical details.
+Completed files can be revealed in Finder.
 
 The current preview uses Homebrew for its download engine. If the tools are not
 ready, select **Prepare Engine** in the app. This is a one-time preparation, not
@@ -57,25 +64,25 @@ channels.
 
 The current preview checks its Homebrew-managed engine automatically. A
 successful check is performed at most once every 24 hours while Vidindir is
-running; failed checks can be retried later. The updater refreshes Homebrew's
-package information and asks Homebrew to upgrade only the outdated Vidindir
-formulae: `yt-dlp`, FFmpeg, and Deno. Homebrew may also update a required
-dependency when one of those formulae needs it.
+running; failed checks use a shorter retry schedule. The updater refreshes
+Homebrew's package information and upgrades only outdated Vidindir components:
+`yt-dlp`, FFmpeg, and Deno. Homebrew may also update a required dependency when
+one of those formulae needs it.
 
 It does not uninstall and reinstall the app, and it never touches downloaded
 media. If the Mac is off or Vidindir is closed when a check would have happened,
 the app checks after it is opened again.
 
-For Public V1, the goal is to replace this Homebrew dependency with managed,
-versioned engine packages. A new engine will be verified and health-checked
-before activation, while the previous working version is retained for rollback.
+The public release will use managed, versioned engine packages instead of asking
+people to install Homebrew. A new engine must be verified and health-checked
+before activation, with the previous working version retained for rollback.
 
 ### Vidindir app updates
 
 Vidindir checks for app updates in the background. Every update is verified
 before installation, and the app waits for active downloads and engine work to
-finish before restarting. The public update channel will stay empty until Public
-V1 passes its release checks.
+finish before restarting. The public update channel will remain empty until the
+first release passes its qualification checks.
 
 GitHub prereleases are not offered through the stable automatic-update channel.
 Anyone testing a prerelease should install a newer preview manually.
@@ -105,11 +112,10 @@ Vidindir has no advertising, analytics, tracking, or mandatory account. Download
 run locally. Pasted URLs go from the local engine to the media service; they are
 not sent to a Vidindir server.
 
-Vidindir stores preferences and recent download details locally on the Mac. It
-connects to the pasted media website to resolve and download a link, to GitHub
-for app updates, and—in the current preview—to Homebrew and the engine's required
-component sources, including npm-hosted yt-dlp challenge code, when preparing or
-updating download tools.
+Vidindir stores the library, download records, local-file status, and preferences
+on the Mac. It connects to a pasted media website to resolve or download the
+link, to GitHub for app updates, and—in the current preview—to Homebrew and the
+engine's required component sources when preparing or updating download tools.
 
 Use Vidindir only for media you own, media offered under a suitable license, or
 media you have permission to download. Users remain responsible for the source

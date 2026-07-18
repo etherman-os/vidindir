@@ -70,6 +70,8 @@ let package = Package(
             name: "VidindirTests",
             dependencies: [
                 "Vidindir",
+                "VidindirDomain",
+                "VidindirPersistence",
                 .product(name: "Testing", package: "swift-testing"),
             ],
             path: "Tests/VidindirTests"

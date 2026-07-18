@@ -3,21 +3,25 @@ import Foundation
 public struct DownloadRequest: Equatable, Hashable, Sendable {
     public let sourceURL: URL
     public let format: DownloadFormat
+    public let quality: DownloadQuality
     public let destinationDirectory: URL
 
     public init(
         sourceURL: URL,
         format: DownloadFormat,
+        quality: DownloadQuality = .best,
         destinationDirectory: URL
     ) {
         self.sourceURL = sourceURL
         self.format = format
+        self.quality = quality
         self.destinationDirectory = destinationDirectory.standardizedFileURL
     }
 
     public init(
         urlString: String,
         format: DownloadFormat,
+        quality: DownloadQuality = .best,
         destinationDirectory: URL
     ) throws {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -28,6 +32,7 @@ public struct DownloadRequest: Equatable, Hashable, Sendable {
         self.init(
             sourceURL: url,
             format: format,
+            quality: quality,
             destinationDirectory: destinationDirectory
         )
     }
@@ -57,6 +62,30 @@ public struct DownloadRequest: Equatable, Hashable, Sendable {
             case .invalidDestination:
                 return "Choose a valid download folder."
             }
+        }
+    }
+}
+
+public enum DownloadQuality: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
+    case best
+    case p1080
+    case p720
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .best: "Best"
+        case .p1080: "1080p"
+        case .p720: "720p"
+        }
+    }
+
+    var maximumHeight: Int? {
+        switch self {
+        case .best: nil
+        case .p1080: 1_080
+        case .p720: 720
         }
     }
 }

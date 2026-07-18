@@ -46,6 +46,27 @@ struct YTDLPCommandBuilderTests {
         #expect(value(after: "--audio-quality", in: arguments) == "0")
     }
 
+    @Test(arguments: [
+        (DownloadQuality.p1080, 1_080),
+        (DownloadQuality.p720, 720),
+    ])
+    func limitsVideoHeightWithoutRequiringAnExactSourceResolution(
+        quality: DownloadQuality,
+        height: Int
+    ) throws {
+        let request = DownloadRequest(
+            sourceURL: try #require(URL(string: "https://example.com/video")),
+            format: .mp4,
+            quality: quality,
+            destinationDirectory: URL(fileURLWithPath: "/tmp")
+        )
+        let arguments = try YTDLPCommandBuilder().build(request, tools: tools).arguments
+        let selector = try #require(value(after: "--format", in: arguments))
+
+        #expect(selector.contains("height<=\(height)"))
+        #expect(!selector.contains("height=\(height)"))
+    }
+
     @Test func keepsOptionLookingInputAfterEndOfOptionsMarker() throws {
         let request = DownloadRequest(
             sourceURL: try #require(URL(string: "--exec")),

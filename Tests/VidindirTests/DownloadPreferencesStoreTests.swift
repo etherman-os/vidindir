@@ -55,6 +55,21 @@ struct DownloadPreferencesStoreTests {
         fixture.defaults.set("wav", forKey: "preferences.selectedFormat")
         #expect(fixture.makeStore().selectedFormat == .mp4)
     }
+
+    @Test func remembersQualitySeparatelyForVideoAndAudio() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let store = fixture.makeStore()
+
+        store.setQuality(.p1080, for: .mp4)
+        store.setQuality(.p720, for: .mp3)
+
+        let reloaded = fixture.makeStore()
+        #expect(reloaded.quality(for: .mp4) == .p1080)
+        #expect(reloaded.quality(for: .mp3) == .p720)
+        fixture.defaults.set("future-value", forKey: "preferences.quality.mp4")
+        #expect(reloaded.quality(for: .mp4) == .best)
+    }
 }
 
 private struct Fixture {
