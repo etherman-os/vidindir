@@ -36,6 +36,24 @@ The current build includes:
 Downloaded files stay on the Mac. The library remains useful even when a file
 has not been downloaded or the download engine is unavailable.
 
+## Install
+
+**Homebrew (recommended)** — no Gatekeeper prompt, opens directly:
+
+```bash
+brew install --cask etherman-os/vidindir/vidindir
+```
+
+**Manual download** — get the latest DMG from
+[Releases](https://github.com/etherman-os/vidindir/releases) and drag
+Vidindir to Applications. The build is ad-hoc signed (Developer Preview), so
+on first launch macOS asks you to confirm: **System Settings → Privacy &
+Security → Open Anyway**. Updates installed afterwards by the in-app updater
+do not ask again.
+
+New versions are delivered automatically through the verified in-app
+updater; you never need to reinstall by hand.
+
 ## Using the current preview
 
 Once a preview build is running:
