@@ -9,36 +9,92 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Every stable release updates the same appcast, so release jobs must serialize.
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
-# Optional Apple release secrets:
+# Required for stable publication:
+#   repository/environment variable ENABLE_PUBLIC_RELEASES=true
+#   SPARKLE_PRIVATE_ED_KEY
 #   MACOS_CERTIFICATE_P12_BASE64, MACOS_CERTIFICATE_PASSWORD,
 #   MACOS_SIGNING_IDENTITY, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
-# Without a complete set, the workflow uploads an explicitly labeled artifact
-# for maintainers but does not publish it as a public GitHub Release.
+#
+# Apple credentials are not required to publish a clearly labelled GitHub
+# prerelease. Preview builds sign the Sparkle archive with the Ed25519 update
+# key, so prerelease users receive new previews through the in-app updater.
+# Only Developer ID signed and notarized builds are allowed to become a
+# stable GitHub Release.
 
 jobs:
   macos:
     name: Build macOS release
     runs-on: macos-15
-    env:
-      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    environment: release
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag and feed progression
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tags must use the exact vMAJOR.MINOR.PATCH format." >&2
+            exit 1
+          fi
+
+          /usr/bin/git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          tag_commit="$(/usr/bin/git rev-list -n 1 "$GITHUB_REF_NAME")"
+          main_commit="$(/usr/bin/git rev-parse refs/remotes/origin/main)"
+          if [[ "$tag_commit" != "$main_commit" ]]; then
+            echo "The release tag must point to the current head of main." >&2
+            exit 1
+          fi
+
+          version="${GITHUB_REF_NAME#v}"
+          build_number="$((GITHUB_RUN_NUMBER + 2))"
+          source_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Support/Info.plist)"
+          if [[ "$source_version" != "$version" ]]; then
+            echo "Tag version $version does not match Support/Info.plist version $source_version." >&2
+            exit 1
+          fi
+          base_appcast="$RUNNER_TEMP/base-appcast.xml"
+
+          if ! /usr/bin/git cat-file -e \
+            refs/remotes/origin/main:appcast.xml 2>/dev/null; then
+            echo "main does not contain the signed stable appcast." >&2
+            exit 1
+          fi
+
+          /usr/bin/git show refs/remotes/origin/main:appcast.xml > "$base_appcast"
+          base_appcast_sha="$(/usr/bin/git rev-parse refs/remotes/origin/main:appcast.xml)"
+
+          /usr/bin/swift Scripts/verify_sparkle_feed.swift \
+            --feed "$base_appcast" \
+            --plist Support/Info.plist \
+            --expected-version "$version" \
+            --expected-build "$build_number"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "base_appcast=$base_appcast" >> "$GITHUB_OUTPUT"
+          echo "base_appcast_sha=$base_appcast_sha" >> "$GITHUB_OUTPUT"
 
       - name: Show Swift version
         run: swift --version
 
       - name: Test
-        run: swift test
+        run: |
+          ./Scripts/test_release_mode.sh
+          /usr/bin/swift Scripts/verify_sparkle_feed.swift --self-test
+          swift test
 
       - name: Build release binary
         run: swift build -c release
@@ -47,8 +103,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x Scripts/package_app.sh Scripts/create_dmg.sh
-          ./Scripts/package_app.sh
+          chmod +x \
+            Scripts/package_app.sh \
+            Scripts/create_dmg.sh \
+            Scripts/sign_app.sh
+          ARCHITECTURES="arm64 x86_64" ./Scripts/package_app.sh
 
           app_path="$(/usr/bin/find dist -maxdepth 1 -type d -name '*.app' -print -quit)"
           if [[ -z "$app_path" ]]; then
@@ -60,41 +119,59 @@ jobs:
           app_file_stem="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Contents/Info.plist")"
           app_slug="$(printf '%s' "$app_file_stem" | /usr/bin/sed 's/[^A-Za-z0-9._-]/-/g')"
           app_slug="${app_slug:-App}"
-          build_arch="$(uname -m)"
-          version="${GITHUB_REF_NAME#v}"
-          marketing_version="${version%%-*}"
-          if [[ ! "$marketing_version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
-            marketing_version="0.0.$GITHUB_RUN_NUMBER"
-          fi
+          /usr/bin/lipo "$app_path/Contents/MacOS/$app_file_stem" \
+            -verify_arch arm64 x86_64
+          universal_executables=(
+            "$app_path/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+            "$app_path/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
+            "$app_path/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater"
+            "$app_path/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
+            "$app_path/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc/Contents/MacOS/Installer"
+          )
+          for executable in "${universal_executables[@]}"; do
+            /usr/bin/lipo "$executable" -verify_arch arm64 x86_64
+          done
+          build_arch="universal2"
 
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $marketing_version" "$app_path/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$app_path/Contents/Info.plist"
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleShortVersionString ${{ steps.release.outputs.version }}" \
+            "$app_path/Contents/Info.plist"
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleVersion ${{ steps.release.outputs.build_number }}" \
+            "$app_path/Contents/Info.plist"
 
-          # Updating Info.plist invalidates the package script's ad-hoc signature.
-          /usr/bin/codesign --force --deep --sign - "$app_path"
+          # Info.plist changed after packaging. Re-seal the app while retaining
+          # Sparkle's valid nested signatures and their Hardened Runtime flags.
+          ./Scripts/sign_app.sh "$app_path" -
 
           echo "APP_PATH=$app_path" >> "$GITHUB_ENV"
           echo "APP_DISPLAY_NAME=$app_display_name" >> "$GITHUB_ENV"
           echo "APP_SLUG=$app_slug" >> "$GITHUB_ENV"
           echo "BUILD_ARCH=$build_arch" >> "$GITHUB_ENV"
 
-      - name: Import Developer ID certificate
+      - name: Import Developer ID certificate and sign app
         id: signing
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ -z "$MACOS_CERTIFICATE_P12_BASE64" || -z "$MACOS_CERTIFICATE_PASSWORD" || -z "$MACOS_SIGNING_IDENTITY" ]]; then
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "Developer ID secrets are incomplete; producing an unsigned fallback."
+            echo "Developer ID credentials are incomplete; keeping the ad-hoc preview signature."
             exit 0
           fi
 
           certificate_path="$RUNNER_TEMP/app-signing.p12"
           keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
           keychain_password="$(/usr/bin/openssl rand -hex 24)"
+          umask 077
 
-          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | /usr/bin/base64 -D > "$certificate_path"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | \
+            /usr/bin/base64 -D > "$certificate_path"
           /usr/bin/security create-keychain -p "$keychain_password" "$keychain_path"
           /usr/bin/security set-keychain-settings -lut 21600 "$keychain_path"
           /usr/bin/security unlock-keychain -p "$keychain_password" "$keychain_path"
@@ -111,106 +188,388 @@ jobs:
             -k "$keychain_password" \
             "$keychain_path"
 
-          /usr/bin/codesign \
-            --force \
-            --deep \
-            --options runtime \
-            --timestamp \
-            --sign "$MACOS_SIGNING_IDENTITY" \
-            "$APP_PATH"
-          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          ./Scripts/sign_app.sh "$APP_PATH" "$MACOS_SIGNING_IDENTITY"
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Select release mode
         id: mode
+        env:
+          NOTARIZATION_CONFIGURED: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+          SPARKLE_KEY_CONFIGURED: ${{ secrets.SPARKLE_PRIVATE_ED_KEY != '' }}
+          REQUIRE_DEVELOPER_ID: ${{ vars.REQUIRE_DEVELOPER_ID }}
+          ENABLE_PUBLIC_RELEASES: ${{ vars.ENABLE_PUBLIC_RELEASES }}
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          safe_version="$(printf '%s' "$version" | /usr/bin/sed 's/[^A-Za-z0-9._-]/-/g')"
+          safe_version="${{ steps.release.outputs.version }}"
+          signed="${{ steps.signing.outputs.signed }}"
+          selection="$(./Scripts/select_release_mode.sh \
+            "$signed" \
+            "$NOTARIZATION_CONFIGURED" \
+            "$SPARKLE_KEY_CONFIGURED" \
+            "${REQUIRE_DEVELOPER_ID:-false}" \
+            "$APP_SLUG" \
+            "$safe_version" \
+            "$BUILD_ARCH")"
+          printf '%s\n' "$selection" >> "$GITHUB_OUTPUT"
 
-          if [[ "${{ steps.signing.outputs.signed }}" != "true" ]]; then
-            mode="unsigned"
-            dmg_name="$APP_SLUG-$safe_version-macOS-$BUILD_ARCH-unsigned.dmg"
-          elif [[ -n "$APPLE_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
-            mode="notarized"
-            dmg_name="$APP_SLUG-$safe_version-macOS-$BUILD_ARCH.dmg"
+          mode="$(printf '%s\n' "$selection" | /usr/bin/sed -n 's/^mode=//p')"
+          publish_stable="$(printf '%s\n' "$selection" | /usr/bin/sed -n 's/^publish_stable=//p')"
+          publish_prerelease="$(printf '%s\n' "$selection" | /usr/bin/sed -n 's/^publish_prerelease=//p')"
+          dmg_name="$(printf '%s\n' "$selection" | /usr/bin/sed -n 's/^dmg_name=//p')"
+          if [[ "${ENABLE_PUBLIC_RELEASES:-false}" == "true" ]]; then
+            publication_enabled="true"
           else
-            mode="signed-unnotarized"
-            dmg_name="$APP_SLUG-$safe_version-macOS-$BUILD_ARCH-signed-unnotarized.dmg"
+            publication_enabled="false"
           fi
-
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "dmg_name=$dmg_name" >> "$GITHUB_OUTPUT"
+          echo "publication_enabled=$publication_enabled" >> "$GITHUB_OUTPUT"
           echo "Release mode: $mode" >> "$GITHUB_STEP_SUMMARY"
+          echo "Stable publication: $publish_stable" >> "$GITHUB_STEP_SUMMARY"
+          echo "Prerelease publication: $publish_prerelease" >> "$GITHUB_STEP_SUMMARY"
+          echo "Public release gate enabled: $publication_enabled" >> "$GITHUB_STEP_SUMMARY"
           echo "Asset: $dmg_name" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create drag-to-Applications DMG
+      - name: Notarize and staple app
+        if: steps.mode.outputs.mode == 'notarized'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           set -euo pipefail
-          OUTPUT_DMG="$PWD/dist/${{ steps.mode.outputs.dmg_name }}" ./Scripts/create_dmg.sh
+          submission="$RUNNER_TEMP/$APP_SLUG-${{ steps.release.outputs.version }}-notarization.zip"
+          result="$RUNNER_TEMP/app-notary-result.plist"
+          log="$RUNNER_TEMP/app-notary-log.json"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$submission"
+          /usr/bin/xcrun notarytool submit "$submission" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait \
+            --output-format plist > "$result"
+          submission_id="$(/usr/bin/plutil -extract id raw -o - "$result")"
+          status="$(/usr/bin/plutil -extract status raw -o - "$result")"
+          /usr/bin/xcrun notarytool log "$submission_id" "$log" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
+          /usr/bin/plutil -lint "$log"
+          if [[ "$status" != "Accepted" ]]; then
+            echo "App notarization was not accepted (status: $status)." >&2
+            exit 1
+          fi
+          /usr/bin/xcrun stapler staple "$APP_PATH"
+          /usr/bin/xcrun stapler validate "$APP_PATH"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          /usr/sbin/spctl --assess --type execute --verbose=4 "$APP_PATH"
+
+      - name: Create drag-to-Applications DMG
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="dist/${{ steps.mode.outputs.dmg_name }}"
+          OUTPUT_DMG="$PWD/$dmg" ./Scripts/create_dmg.sh
 
           if [[ "${{ steps.signing.outputs.signed }}" == "true" ]]; then
             /usr/bin/codesign \
               --force \
               --timestamp \
               --sign "$MACOS_SIGNING_IDENTITY" \
-              "dist/${{ steps.mode.outputs.dmg_name }}"
-            /usr/bin/codesign --verify --verbose=2 "dist/${{ steps.mode.outputs.dmg_name }}"
+              "$dmg"
+            /usr/bin/codesign --verify --strict --verbose=2 "$dmg"
           fi
 
-      - name: Notarize and staple
+      - name: Notarize and staple DMG
         if: steps.mode.outputs.mode == 'notarized'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           set -euo pipefail
           dmg="dist/${{ steps.mode.outputs.dmg_name }}"
+          result="$RUNNER_TEMP/dmg-notary-result.plist"
+          log="$RUNNER_TEMP/dmg-notary-log.json"
           /usr/bin/xcrun notarytool submit "$dmg" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait
+            --wait \
+            --output-format plist > "$result"
+          submission_id="$(/usr/bin/plutil -extract id raw -o - "$result")"
+          status="$(/usr/bin/plutil -extract status raw -o - "$result")"
+          /usr/bin/xcrun notarytool log "$submission_id" "$log" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
+          /usr/bin/plutil -lint "$log"
+          if [[ "$status" != "Accepted" ]]; then
+            echo "DMG notarization was not accepted (status: $status)." >&2
+            exit 1
+          fi
           /usr/bin/xcrun stapler staple "$dmg"
           /usr/bin/xcrun stapler validate "$dmg"
+          /usr/sbin/spctl --assess \
+            --type open \
+            --context context:primary-signature \
+            --verbose=4 \
+            "$dmg"
+
+      - name: Upload notarization logs
+        if: always() && steps.mode.outputs.mode == 'notarized'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: notarization-${{ steps.release.outputs.version }}
+          path: |
+            ${{ runner.temp }}/app-notary-log.json
+            ${{ runner.temp }}/dmg-notary-log.json
+          if-no-files-found: warn
+
+      - name: Build and verify Sparkle update feed
+        if: steps.mode.outputs.publish_stable == 'true' || steps.mode.outputs.publish_feed == 'true'
+        id: sparkle
+        env:
+          SPARKLE_PRIVATE_ED_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          update_dir="$RUNNER_TEMP/sparkle-updates"
+          zip_name="$APP_SLUG-${{ steps.release.outputs.version }}-macOS-$BUILD_ARCH.zip"
+          archive="$update_dir/$zip_name"
+          generated_appcast="$update_dir/appcast.xml"
+          /bin/mkdir -p "$update_dir"
+          /bin/cp "${{ steps.release.outputs.base_appcast }}" "$generated_appcast"
+
+          # ditto preserves framework symlinks and resource forks required by macOS apps.
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$archive"
+
+          # Sparkle reads the private Ed25519 key from stdin; it is never written to disk.
+          printf '%s' "$SPARKLE_PRIVATE_ED_KEY" | \
+            .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+              --ed-key-file - \
+              --download-url-prefix "https://github.com/etherman-os/vidindir/releases/download/$GITHUB_REF_NAME/" \
+              --link "https://github.com/etherman-os/vidindir" \
+              --maximum-versions 0 \
+              --maximum-deltas 0 \
+              -o "$generated_appcast" \
+              "$update_dir"
+
+          # First use Sparkle's verifier, then independently verify both the
+          # feed and archive signatures against SUPublicEDKey embedded in the app.
+          printf '%s' "$SPARKLE_PRIVATE_ED_KEY" | \
+            .build/artifacts/sparkle/Sparkle/bin/sign_update \
+              --verify \
+              --ed-key-file - \
+              "$generated_appcast"
+          /usr/bin/swift Scripts/verify_sparkle_feed.swift \
+            --feed "$generated_appcast" \
+            --plist "$APP_PATH/Contents/Info.plist" \
+            --base-feed "${{ steps.release.outputs.base_appcast }}" \
+            --archive "$archive" \
+            --expected-version "${{ steps.release.outputs.version }}" \
+            --expected-build "${{ steps.release.outputs.build_number }}" \
+            --expected-download-url "https://github.com/etherman-os/vidindir/releases/download/$GITHUB_REF_NAME/$zip_name"
+
+          /bin/cp "$archive" "dist/$zip_name"
+          /bin/cp "$generated_appcast" dist/appcast.xml
+
+          echo "zip_name=$zip_name" >> "$GITHUB_OUTPUT"
+          echo "Sparkle feed and archive: cryptographically verified" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.mode.outputs.dmg_name }}
           path: dist/${{ steps.mode.outputs.dmg_name }}
           if-no-files-found: error
 
-      - name: Publish GitHub release asset
-        if: steps.mode.outputs.mode == 'notarized'
+      - name: Upload signed update artifacts
+        if: steps.mode.outputs.publish_stable == 'true' || steps.mode.outputs.publish_feed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sparkle-${{ steps.release.outputs.version }}
+          path: |
+            dist/${{ steps.sparkle.outputs.zip_name }}
+            dist/appcast.xml
+          if-no-files-found: error
+
+      - name: Publish GitHub release assets
+        if: steps.mode.outputs.publish_stable == 'true' && steps.mode.outputs.publication_enabled == 'true'
+        id: stable_release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
           dmg="dist/${{ steps.mode.outputs.dmg_name }}"
+          archive="dist/${{ steps.sparkle.outputs.zip_name }}"
+          appcast="dist/appcast.xml"
 
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$dmg" --clobber
+            release_state="$(gh release view "$tag" --json isDraft,isPrerelease,isImmutable --jq '[.isDraft, .isPrerelease, .isImmutable] | @tsv')"
+            IFS=$'\t' read -r is_draft is_prerelease is_immutable <<< "$release_state"
+            if [[ "$is_draft" != "false" || "$is_prerelease" != "false" ]]; then
+              echo "Existing release $tag is a draft or prerelease; refusing to publish a stable appcast. Use a new version tag, or remove the old release only after manual inspection." >&2
+              exit 1
+            fi
+
+            if [[ "$is_immutable" == "true" ]]; then
+              remote_dir="$RUNNER_TEMP/immutable-stable-release"
+              /bin/mkdir -p "$remote_dir"
+              for asset in "$dmg" "$archive" "$appcast"; do
+                asset_name="$(basename "$asset")"
+                gh release download "$tag" --pattern "$asset_name" --dir "$remote_dir"
+                if ! /usr/bin/cmp -s "$asset" "$remote_dir/$asset_name"; then
+                  echo "Immutable release asset differs from this build: $asset_name" >&2
+                  exit 1
+                fi
+              done
+            else
+              gh release upload "$tag" "$dmg" "$archive" "$appcast" --clobber
+            fi
           else
-            gh release create "$tag" "$dmg" \
+            gh release create "$tag" "$dmg" "$archive" "$appcast" \
               --verify-tag \
+              --latest \
               --generate-notes \
               --title "$APP_DISPLAY_NAME $tag"
           fi
 
-      - name: Explain non-public fallback
-        if: steps.mode.outputs.mode != 'notarized'
-        run: |
-          echo "The DMG is available only as a workflow artifact." >> "$GITHUB_STEP_SUMMARY"
-          echo "GitHub Release publication requires Developer ID signing and notarization." >> "$GITHUB_STEP_SUMMARY"
+          release_url="$(gh release view "$tag" --json url --jq .url)"
+          echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
 
-      - name: Remove temporary signing keychain
+      - name: Publish GitHub prerelease asset
+        if: steps.mode.outputs.publish_prerelease == 'true' && steps.mode.outputs.publication_enabled == 'true'
+        id: prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          dmg="dist/${{ steps.mode.outputs.dmg_name }}"
+          dmg_name="$(basename "$dmg")"
+
+          assets=("$dmg")
+          if [[ "${{ steps.mode.outputs.publish_feed }}" == "true" ]]; then
+            assets+=("dist/${{ steps.sparkle.outputs.zip_name }}" "dist/appcast.xml")
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            release_state="$(gh release view "$tag" --json isDraft,isPrerelease,isImmutable --jq '[.isDraft, .isPrerelease, .isImmutable] | @tsv')"
+            IFS=$'\t' read -r is_draft is_prerelease is_immutable <<< "$release_state"
+            if [[ "$is_draft" != "false" || "$is_prerelease" != "true" ]]; then
+              echo "Existing release $tag is not a published prerelease; refusing to replace it." >&2
+              exit 1
+            fi
+
+            existing_dmgs="$(gh release view "$tag" --json assets --jq '.assets[].name | select(endswith(".dmg"))')"
+            while IFS= read -r existing_dmg; do
+              if [[ -n "$existing_dmg" && "$existing_dmg" != "$dmg_name" ]]; then
+                echo "Existing prerelease contains a different DMG ($existing_dmg); refusing to leave a stale release-mode asset behind." >&2
+                exit 1
+              fi
+            done <<< "$existing_dmgs"
+
+            if [[ "$is_immutable" == "true" ]]; then
+              remote_dir="$RUNNER_TEMP/immutable-prerelease"
+              /bin/mkdir -p "$remote_dir"
+              gh release download "$tag" --pattern "$dmg_name" --dir "$remote_dir"
+              if ! /usr/bin/cmp -s "$dmg" "$remote_dir/$dmg_name"; then
+                echo "Immutable prerelease asset differs from this build: $dmg_name" >&2
+                exit 1
+              fi
+            else
+              gh release upload "$tag" "${assets[@]}" --clobber
+            fi
+          else
+            preview_notes="> **Developer preview:** This build is not in Vidindir's stable channel. macOS may require System Settings → Privacy & Security → Open Anyway after the first blocked launch. New previews are picked up automatically by the in-app updater."
+            gh release create "$tag" "${assets[@]}" \
+              --verify-tag \
+              --prerelease \
+              --latest=false \
+              --generate-notes \
+              --notes "$preview_notes" \
+              --title "$APP_DISPLAY_NAME $tag (Prerelease)"
+          fi
+
+          release_url="$(gh release view "$tag" --json url --jq .url)"
+          echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
+
+      - name: Publish verified appcast to the stable feed
+        if: (steps.mode.outputs.publish_stable == 'true' || steps.mode.outputs.publish_feed == 'true') && steps.mode.outputs.publication_enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Never overwrite a feed that changed after this job validated it.
+          current_sha="$(gh api \
+            "repos/$GITHUB_REPOSITORY/contents/appcast.xml?ref=main" \
+            --jq .sha)"
+          if [[ "$current_sha" != "${{ steps.release.outputs.base_appcast_sha }}" ]]; then
+            echo "The stable appcast changed during this release; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+          content="$(/usr/bin/base64 < dist/appcast.xml | /usr/bin/tr -d '\n')"
+          gh api \
+            --method PUT \
+            "repos/$GITHUB_REPOSITORY/contents/appcast.xml" \
+            -f "message=release: update signed appcast for $GITHUB_REF_NAME" \
+            -f "content=$content" \
+            -f "branch=main" \
+            -f "sha=$current_sha"
+
+      - name: Summarize stable distribution
+        if: steps.mode.outputs.publish_stable == 'true' && steps.mode.outputs.publication_enabled == 'true'
+        run: |
+          echo "Stable release: [${{ github.ref_name }}](${{ steps.stable_release.outputs.release_url }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "The notarized app and signed Sparkle feed were published successfully." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain prerelease distribution
+        if: steps.mode.outputs.publish_prerelease == 'true' && steps.mode.outputs.publication_enabled == 'true'
+        run: |
+          echo "Prerelease: [${{ github.ref_name }}](${{ steps.prerelease.outputs.release_url }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "Signature/notarization mode: ${{ steps.mode.outputs.mode }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "The DMG was published as a GitHub prerelease and uploaded as a workflow artifact." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.mode.outputs.publish_feed }}" == "true" ]]; then
+            echo "The signed update archive and appcast were published; the in-app updater will offer this preview automatically." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "This is a manual prerelease channel; the Sparkle feed was not changed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "${{ steps.mode.outputs.mode }}" == "developer-preview" || "${{ steps.mode.outputs.mode }}" == "signed-unnotarized" ]]; then
+            echo "macOS may require System Settings → Privacy & Security → Open Anyway after the first blocked launch." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Explain artifact-only distribution
+        if: steps.mode.outputs.publication_enabled == 'true' && steps.mode.outputs.publish_stable != 'true' && steps.mode.outputs.publish_prerelease != 'true'
+        run: |
+          echo "The DMG is available only as a workflow artifact because Developer ID signing is required by repository policy." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain disabled publication gate
+        if: steps.mode.outputs.publication_enabled != 'true'
+        run: |
+          echo "Public release publication is disabled. Validated artifacts remain available only to workflow reviewers." >> "$GITHUB_STEP_SUMMARY"
+          echo "Set ENABLE_PUBLIC_RELEASES=true only after the release acceptance review is complete." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary signing material
         if: always()
         shell: bash
         run: |
           keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
+          certificate_path="$RUNNER_TEMP/app-signing.p12"
           if [[ -f "$keychain_path" ]]; then
             /usr/bin/security delete-keychain "$keychain_path" || true
           fi
+          /bin/rm -f "$certificate_path"

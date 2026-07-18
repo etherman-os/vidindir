@@ -53,13 +53,27 @@ public protocol DownloadBackend: AnyObject, Sendable {
     func cancelCurrentDownload()
 }
 
+public enum DownloadEngineRecoveryKind: Equatable, Sendable {
+    case installMissingComponents
+    case assessInterruptedMutation
+    case repairUnhealthyComponents
+}
+
 public struct DownloadEngineStatus: Equatable, Sendable {
     public let isReady: Bool
     public let missingComponents: [String]
+    public let recoveryKind: DownloadEngineRecoveryKind?
 
-    public init(isReady: Bool, missingComponents: [String] = []) {
+    public init(
+        isReady: Bool,
+        missingComponents: [String] = [],
+        recoveryKind: DownloadEngineRecoveryKind? = nil
+    ) {
         self.isReady = isReady
         self.missingComponents = missingComponents
+        self.recoveryKind = isReady
+            ? nil
+            : (recoveryKind ?? .installMissingComponents)
     }
 }
 
@@ -72,15 +86,129 @@ public protocol DownloadEngineManaging: AnyObject, Sendable {
 
     func currentStatus() -> DownloadEngineStatus
     func prepare(onOutput: @escaping @Sendable (String) -> Void) async throws
+    func checkForUpdates(force: Bool) async -> DownloadEngineUpdateResult
+}
+
+/// A user-facing, backend-neutral result for an engine update check. Raw
+/// Homebrew output and failures deliberately stay behind the engine boundary.
+public enum DownloadEngineUpdateResult: Equatable, Sendable {
+    case skipped(nextCheck: Date)
+    case recovered(checkedAt: Date)
+    case upToDate(checkedAt: Date)
+    case updated(components: [ToolBinary], checkedAt: Date)
+    case partiallyManaged(
+        managedComponents: [ToolBinary],
+        updatedComponents: [ToolBinary],
+        checkedAt: Date
+    )
+    case updatesBlocked(components: [ToolBinary], checkedAt: Date)
+    case updatedWithBlockedComponents(
+        updatedComponents: [ToolBinary],
+        blockedComponents: [ToolBinary],
+        checkedAt: Date
+    )
+    case partiallyManagedWithBlockedUpdates(
+        managedComponents: [ToolBinary],
+        updatedComponents: [ToolBinary],
+        blockedComponents: [ToolBinary],
+        checkedAt: Date
+    )
+    case notManaged(checkedAt: Date)
+    case unavailable(retryAfter: Date)
+    case unhealthy(components: [ToolBinary], retryAfter: Date)
+    case busy
+    case failed(retryAfter: Date)
+
+    public var message: String {
+        switch self {
+        case .skipped:
+            return "Automatic engine updates are scheduled."
+        case .recovered:
+            return "The download engine passed its health check and is ready."
+        case .upToDate:
+            return "The download engine is up to date."
+        case .updated(let components, _):
+            let names = components.map(\.displayName)
+            let list = ListFormatter.localizedString(byJoining: names)
+            return "Updated \(list)."
+        case .partiallyManaged(let managedComponents, let updatedComponents, _):
+            let managed = ListFormatter.localizedString(
+                byJoining: managedComponents.map(\.displayName)
+            )
+            if updatedComponents.isEmpty {
+                return "Homebrew-managed components (\(managed)) are up to date. Other engine tools must be updated separately."
+            }
+            let updated = ListFormatter.localizedString(
+                byJoining: updatedComponents.map(\.displayName)
+            )
+            return "Updated \(updated). Other engine tools are not managed by Homebrew."
+        case .updatesBlocked(let components, _):
+            let names = ListFormatter.localizedString(
+                byJoining: components.map(\.displayName)
+            )
+            return "Updates are available for \(names), but the Homebrew formula is pinned."
+        case .updatedWithBlockedComponents(let updatedComponents, let blockedComponents, _):
+            let updated = ListFormatter.localizedString(
+                byJoining: updatedComponents.map(\.displayName)
+            )
+            let blocked = ListFormatter.localizedString(
+                byJoining: blockedComponents.map(\.displayName)
+            )
+            return "Updated \(updated). \(blocked) remains pinned in Homebrew."
+        case .partiallyManagedWithBlockedUpdates(
+            let managedComponents,
+            let updatedComponents,
+            let blockedComponents,
+            _
+        ):
+            let managed = ListFormatter.localizedString(
+                byJoining: managedComponents.map(\.displayName)
+            )
+            let blocked = ListFormatter.localizedString(
+                byJoining: blockedComponents.map(\.displayName)
+            )
+            if updatedComponents.isEmpty {
+                return "Homebrew manages \(managed), but \(blocked) remains pinned. Other engine tools must be updated separately."
+            }
+            let updated = ListFormatter.localizedString(
+                byJoining: updatedComponents.map(\.displayName)
+            )
+            return "Updated \(updated); \(blocked) remains pinned. Other engine tools are not managed by Homebrew."
+        case .notManaged:
+            return "The installed download tools are not managed by Homebrew."
+        case .unavailable:
+            return "Automatic engine updates need Homebrew in this developer preview."
+        case .unhealthy(let components, _):
+            let names = ListFormatter.localizedString(
+                byJoining: components.map(\.displayName)
+            )
+            return "The engine update did not pass its health check (\(names)). Downloads are disabled until the engine is repaired."
+        case .busy:
+            return "Another download engine operation is already running."
+        case .failed:
+            return "Vidindir could not check for engine updates. It will try again later."
+        }
+    }
 }
 
 public enum DownloadEngineError: LocalizedError, Equatable, Sendable {
     case componentsStillMissing
+    case operationInProgress
+    case manualRepairRequired(components: [String])
+    case automaticRepairFailed(components: [String])
 
     public var errorDescription: String? {
         switch self {
         case .componentsStillMissing:
             return "Some download engine components are still missing."
+        case .operationInProgress:
+            return "Another download engine operation is already running."
+        case .manualRepairRequired(let components):
+            let names = ListFormatter.localizedString(byJoining: components)
+            return "Vidindir cannot repair \(names) automatically because it is not managed by Homebrew. Reinstall it using the setup guide, then try again."
+        case .automaticRepairFailed(let components):
+            let names = ListFormatter.localizedString(byJoining: components)
+            return "Homebrew could not repair \(names). Open the setup guide, repair the listed component, then try again."
         }
     }
 }

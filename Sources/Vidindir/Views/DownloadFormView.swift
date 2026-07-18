@@ -71,6 +71,20 @@ struct DownloadFormView: View {
                 .disabled(model.phase.isBusy)
             }
 
+            if model.selectedFormat == .mp4 {
+                VStack(alignment: .leading, spacing: 9) {
+                    SectionLabel(title: "Quality", systemImage: "sparkles.tv")
+                    Picker("Quality", selection: qualityBinding) {
+                        ForEach(DownloadQuality.allCases) { quality in
+                            Text(quality.displayName).tag(quality)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .disabled(model.phase.isBusy)
+                }
+            }
+
             VStack(alignment: .leading, spacing: 9) {
                 SectionLabel(title: "Save to", systemImage: "folder")
 
@@ -127,6 +141,13 @@ struct DownloadFormView: View {
                 linkIsFocused = true
             }
         }
+    }
+
+    private var qualityBinding: Binding<DownloadQuality> {
+        Binding(
+            get: { model.selectedQuality },
+            set: { model.selectQuality($0) }
+        )
     }
 }
 

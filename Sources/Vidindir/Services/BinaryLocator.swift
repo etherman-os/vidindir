@@ -1,6 +1,6 @@
 import Foundation
 
-public struct BinaryLocator {
+public struct BinaryLocator: @unchecked Sendable {
     public static let homebrewAndSystemDirectories: [URL] = [
         URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true),
         URL(fileURLWithPath: "/usr/local/bin", isDirectory: true),

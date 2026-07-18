@@ -4,15 +4,18 @@ public struct ProcessInvocation: Equatable, Sendable {
     public let executableURL: URL
     public let arguments: [String]
     public let currentDirectoryURL: URL?
+    public let environment: [String: String]?
 
     public init(
         executableURL: URL,
         arguments: [String],
-        currentDirectoryURL: URL? = nil
+        currentDirectoryURL: URL? = nil,
+        environment: [String: String]? = nil
     ) {
         self.executableURL = executableURL
         self.arguments = arguments
         self.currentDirectoryURL = currentDirectoryURL
+        self.environment = environment
     }
 }
 
@@ -57,7 +60,7 @@ public struct YTDLPCommandBuilder: Sendable {
         switch request.format {
         case .mp4:
             arguments += [
-                "--format", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+                "--format", videoFormatSelector(quality: request.quality),
                 "--merge-output-format", "mp4",
                 "--remux-video", "mp4",
             ]
@@ -78,6 +81,16 @@ public struct YTDLPCommandBuilder: Sendable {
             arguments: arguments,
             currentDirectoryURL: request.destinationDirectory
         )
+    }
+
+    private func videoFormatSelector(quality: DownloadQuality) -> String {
+        guard let height = quality.maximumHeight else {
+            return "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+        }
+        return "bv*[height<=\(height)][ext=mp4]+ba[ext=m4a]"
+            + "/b[height<=\(height)][ext=mp4]"
+            + "/bv*[height<=\(height)]+ba"
+            + "/b[height<=\(height)]"
     }
 
     private func requiredAbsoluteURL(_ url: URL?, tool: ToolBinary) throws -> URL {

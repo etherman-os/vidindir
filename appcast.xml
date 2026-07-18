@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>Vidindir Updates</title>
+        <link>https://github.com/etherman-os/vidindir</link>
+        <description>Verified Vidindir application updates.</description>
+        <language>en</language>
+    </channel>
+</rss>
+<!-- sparkle-signatures:
+edSignature: 9w98Bjncq0gZ3FsjO5k75Og/Wd5ERKMQ+HqnB7PZnDFho6ciwrYIGmueFa5KIdT5sz94JqVmLEzD1qlZf5eHDg==
+length: 375
+-->

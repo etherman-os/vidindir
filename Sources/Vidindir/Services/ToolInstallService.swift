@@ -4,6 +4,7 @@ public final class ToolInstallService: @unchecked Sendable {
     public typealias OutputHandler = @Sendable (String) -> Void
 
     private let homebrewURL: URL?
+    private let homebrewEnvironment: [String: String]
     private let runner: SubprocessRunner
 
     public init(
@@ -13,10 +14,14 @@ public final class ToolInstallService: @unchecked Sendable {
     ) {
         self.homebrewURL = homebrewURL.flatMap(Self.validExecutable)
             ?? Self.findHomebrew(environment: environment)
+        self.homebrewEnvironment = HomebrewProcessEnvironment.constrained(
+            inheriting: environment
+        )
         self.runner = runner
     }
 
     public var isHomebrewAvailable: Bool { homebrewURL != nil }
+    public var homebrewExecutableURL: URL? { homebrewURL }
 
     public func installationInvocation(
         for missingTools: [ToolBinary]
@@ -32,7 +37,8 @@ public final class ToolInstallService: @unchecked Sendable {
 
         return ProcessInvocation(
             executableURL: homebrewURL,
-            arguments: ["install"] + requested.map(\.rawValue)
+            arguments: ["install", "--no-ask"] + requested.map(\.rawValue),
+            environment: homebrewEnvironment
         )
     }
 
@@ -44,7 +50,7 @@ public final class ToolInstallService: @unchecked Sendable {
         let invocation = try installationInvocation(
             for: availability.missingRequiredTools
         )
-        let result = try await runner.run(invocation) { _, line in
+        let result = try await runner.run(invocation, timeout: .seconds(1_800)) { _, line in
             onOutput(line)
         }
         guard result.terminationReason == .exit, result.exitCode == 0 else {
@@ -87,6 +93,20 @@ public final class ToolInstallService: @unchecked Sendable {
             return nil
         }
         return standardized.resolvingSymlinksInPath()
+    }
+}
+
+enum HomebrewProcessEnvironment {
+    static let constrainedValues: [String: String] = [
+        "HOMEBREW_NO_ASK": "1",
+        "HOMEBREW_NO_INSTALL_CLEANUP": "1",
+        "HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK": "1",
+        "HOMEBREW_NO_AUTO_UPDATE": "1",
+        "HOMEBREW_NO_ANALYTICS": "1",
+    ]
+
+    static func constrained(inheriting environment: [String: String]) -> [String: String] {
+        environment.merging(constrainedValues) { _, constrained in constrained }
     }
 }
 

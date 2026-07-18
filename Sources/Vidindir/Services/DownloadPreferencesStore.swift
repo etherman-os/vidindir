@@ -3,6 +3,9 @@ import Foundation
 public final class DownloadPreferencesStore: @unchecked Sendable {
     private enum Keys {
         static let selectedFormat = "preferences.selectedFormat"
+        static func quality(for format: DownloadFormat) -> String {
+            "preferences.quality.\(format.rawValue)"
+        }
         static func destinationBookmark(for format: DownloadFormat) -> String {
             "preferences.destinationBookmark.\(format.rawValue)"
         }
@@ -44,6 +47,22 @@ public final class DownloadPreferencesStore: @unchecked Sendable {
             lock.withLock {
                 defaults.set(newValue.rawValue, forKey: Keys.selectedFormat)
             }
+        }
+    }
+
+    public func quality(for format: DownloadFormat) -> DownloadQuality {
+        lock.withLock {
+            guard let rawValue = defaults.string(forKey: Keys.quality(for: format)),
+                  let quality = DownloadQuality(rawValue: rawValue) else {
+                return .best
+            }
+            return quality
+        }
+    }
+
+    public func setQuality(_ quality: DownloadQuality, for format: DownloadFormat) {
+        lock.withLock {
+            defaults.set(quality.rawValue, forKey: Keys.quality(for: format))
         }
     }
 
