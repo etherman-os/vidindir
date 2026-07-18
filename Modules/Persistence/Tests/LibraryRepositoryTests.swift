@@ -223,7 +223,7 @@ struct LibraryRepositoryTests {
         #expect(try await fixture.repository.page(
             LibraryQuery(searchText: "delete")
         ).totalCount == 0)
-        let stored = try fixture.database.pool.read { db in
+        let stored = try await fixture.database.pool.read { db in
             try Row.fetchOne(
                 db,
                 sql: "SELECT revision, deleted_at FROM media_items WHERE id = ?",
