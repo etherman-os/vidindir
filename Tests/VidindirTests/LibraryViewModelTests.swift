@@ -120,6 +120,7 @@ struct LibraryViewModelTests {
         await model.bootstrapNow()
         let url = try #require(URL(string: "https://x.com/example/status/9876543210"))
         let saved = try savedItem(await model.addLink(url, destination: .inbox))
+        try await eventually { model.items.contains { $0.id == saved.id } }
         let item = try #require(model.items.first { $0.id == saved.id })
 
         model.rename(item, to: "My custom clip name")
@@ -153,6 +154,7 @@ struct LibraryViewModelTests {
                 sourceLabel: "Generic"
             )
         ))
+        try await eventually { model.items.contains { $0.id == saved.id } }
         let inboxItem = try #require(model.items.first { $0.id == saved.id })
         #expect(model.inboxCount == 1)
         #expect(model.libraryCount == 1)

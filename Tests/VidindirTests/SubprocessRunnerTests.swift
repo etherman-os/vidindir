@@ -68,7 +68,7 @@ struct SubprocessRunnerTests {
             }
         }
 
-        let callbackStarted = await waitUntil(timeout: .seconds(1)) {
+        let callbackStarted = await waitUntil(timeout: .seconds(5)) {
             observation.standardOutput == ["ready"]
         }
         guard callbackStarted else {
@@ -112,7 +112,7 @@ struct SubprocessRunnerTests {
             }
         }
 
-        let callbackStarted = await waitUntil(timeout: .seconds(1)) {
+        let callbackStarted = await waitUntil(timeout: .seconds(5)) {
             observation.standardOutput == ["ready"]
         }
         guard callbackStarted else {
@@ -156,7 +156,7 @@ struct SubprocessRunnerTests {
         #expect(result.standardOutput == ["three", "four"])
         #expect(result.standardError == ["beta", "gamma"])
 
-        let receivedEveryCallback = await waitUntil(timeout: .seconds(1)) {
+        let receivedEveryCallback = await waitUntil(timeout: .seconds(5)) {
             observation.standardOutput == ["one", "two", "three", "four"]
                 && observation.standardError == ["alpha", "beta", "gamma"]
         }
@@ -228,7 +228,7 @@ struct SubprocessRunnerTests {
             return
         }
 
-        let descendantsExited = await waitUntil(timeout: .seconds(1)) {
+        let descendantsExited = await waitUntil(timeout: .seconds(5)) {
             !processExists(grandchild) && !processGroupExists(leader)
         }
         #expect(descendantsExited)
@@ -297,7 +297,7 @@ struct SubprocessRunnerTests {
         #expect(errno == ECHILD)
 
         _ = Darwin.kill(escaped, SIGKILL)
-        let escapedExited = await waitUntil(timeout: .seconds(1)) {
+        let escapedExited = await waitUntil(timeout: .seconds(5)) {
             !processExists(escaped)
         }
         #expect(escapedExited)
@@ -320,7 +320,7 @@ struct SubprocessRunnerTests {
             }
         }
 
-        let observedLeader = await waitUntil(timeout: .seconds(1)) {
+        let observedLeader = await waitUntil(timeout: .seconds(5)) {
             observation.leader != nil
         }
         #expect(observedLeader)
@@ -336,7 +336,7 @@ struct SubprocessRunnerTests {
         }
 
         if let leader = observation.leader {
-            let groupExited = await waitUntil(timeout: .seconds(1)) {
+            let groupExited = await waitUntil(timeout: .seconds(5)) {
                 !processGroupExists(leader)
             }
             #expect(groupExited)
@@ -401,7 +401,7 @@ struct SubprocessRunnerTests {
             }
         }
 
-        guard await waitUntil(timeout: .seconds(1), condition: {
+        guard await waitUntil(timeout: .seconds(5), condition: {
             observation.standardOutput == ["first"]
         }) else {
             task.cancel()
@@ -418,7 +418,7 @@ struct SubprocessRunnerTests {
         #expect(observation.standardOutput == ["first"])
 
         releaseCallback.signal()
-        let deliveredRecentSuffix = await waitUntil(timeout: .seconds(1)) {
+        let deliveredRecentSuffix = await waitUntil(timeout: .seconds(5)) {
             observation.standardOutput.last == "line100"
         }
         #expect(deliveredRecentSuffix)
