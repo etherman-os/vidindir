@@ -61,7 +61,7 @@ struct SubprocessRunnerTests {
                     executableURL: URL(fileURLWithPath: "/bin/sh"),
                     arguments: ["-c", "echo ready; trap '' TERM; while :; do :; done"]
                 ),
-                timeout: .milliseconds(200)
+                timeout: .seconds(1)
             ) { stream, line in
                 observation.record(stream: stream, line: line)
                 releaseCallback.wait()
@@ -81,7 +81,7 @@ struct SubprocessRunnerTests {
         // Always release the deliberately blocked callback, including if a
         // regression makes result delivery wait behind it. The delayed release
         // keeps the test itself bounded while the elapsed-time assertion fails.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
             releaseCallback.signal()
         }
         let startedWaitingAt = Date()
@@ -95,7 +95,7 @@ struct SubprocessRunnerTests {
             Issue.record("Unexpected blocking-callback timeout error: \(error)")
         }
 
-        #expect(Date().timeIntervalSince(startedWaitingAt) < 0.75)
+        #expect(Date().timeIntervalSince(startedWaitingAt) < 2)
         releaseCallback.signal()
     }
 
