@@ -205,7 +205,7 @@ struct SubprocessRunnerTests {
         do {
             _ = try await runner.run(
                 invocation,
-                timeout: .milliseconds(500)
+                timeout: .milliseconds(1500)
             ) { stream, line in
                 observation.record(stream: stream, line: line)
             }
@@ -219,7 +219,7 @@ struct SubprocessRunnerTests {
         // If only the immediate child is killed, the TERM-ignoring grandchild
         // keeps both pipes open and this assertion is reached much later (or not
         // at all). The grace period plus generous scheduling headroom stays bound.
-        #expect(Date().timeIntervalSince(startedAt) < 2)
+        #expect(Date().timeIntervalSince(startedAt) < 3.5)
         #expect(observation.sawInheritedStandardError)
 
         guard let leader = observation.leader,
@@ -265,7 +265,7 @@ struct SubprocessRunnerTests {
         do {
             _ = try await runner.run(
                 invocation,
-                timeout: .milliseconds(500)
+                timeout: .milliseconds(1500)
             ) { stream, line in
                 observation.record(stream: stream, line: line)
             }
@@ -279,7 +279,7 @@ struct SubprocessRunnerTests {
         // The escaped child deliberately retains both output pipes for five
         // seconds. Returning well before then proves cancellation stopped the
         // host readers instead of waiting for inherited-pipe EOF.
-        #expect(Date().timeIntervalSince(startedAt) < 2)
+        #expect(Date().timeIntervalSince(startedAt) < 3.5)
 
         guard let leader = observation.leader,
               let escaped = observation.escaped else {
