@@ -6,19 +6,25 @@ struct LibraryBrowserView: View {
     let displayMode: LibraryDisplayMode
     let startDownload: (LibraryItemSummary) -> Void
     @State private var pendingDelete: LibraryItemSummary?
+    @State private var pendingRename: LibraryItemSummary?
+    @State private var renameText = ""
 
     var body: some View {
-        Group {
-            if library.items.isEmpty, !library.isLoading {
-                emptyState
-            } else {
-                switch displayMode {
-                case .grid:
-                    grid
-                case .list:
-                    table
-                case .compact:
-                    compactList
+        VStack(spacing: 0) {
+            scopeExplanation
+            Divider()
+            Group {
+                if library.items.isEmpty, !library.isLoading {
+                    emptyState
+                } else {
+                    switch displayMode {
+                    case .grid:
+                        grid
+                    case .list:
+                        table
+                    case .compact:
+                        compactList
+                    }
                 }
             }
         }
@@ -43,6 +49,25 @@ struct LibraryBrowserView: View {
             }
         } message: { _ in
             Text("This removes the saved link from your library. A local media file is a separate item and is never silently deleted.")
+        }
+        .alert(
+            "Rename Media",
+            isPresented: Binding(
+                get: { pendingRename != nil },
+                set: { if !$0 { pendingRename = nil } }
+            )
+        ) {
+            TextField("Media name", text: $renameText)
+            Button("Cancel", role: .cancel) { pendingRename = nil }
+            Button("Save") {
+                if let item = pendingRename {
+                    library.rename(item, to: renameText)
+                }
+                pendingRename = nil
+            }
+            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Use a name that will make this item easy to find later.")
         }
     }
 
@@ -75,7 +100,7 @@ struct LibraryBrowserView: View {
                     MediaThumbnail(item: item, compact: true)
                         .frame(width: 72, height: 42)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(item.mediaItem.title ?? item.mediaItem.sourceURL.host ?? "Untitled Media")
+                        Text(item.mediaItem.displayTitle)
                             .fontWeight(.medium)
                             .lineLimit(1)
                         Text(item.mediaItem.sourceURL.host ?? "Media link")
@@ -120,7 +145,7 @@ struct LibraryBrowserView: View {
                 MediaThumbnail(item: item, compact: true)
                     .frame(width: 64, height: 36)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item.mediaItem.title ?? item.mediaItem.sourceURL.host ?? "Untitled Media")
+                    Text(item.mediaItem.displayTitle)
                         .lineLimit(1)
                     HStack(spacing: 5) {
                         Text(item.mediaItem.creator ?? item.mediaItem.sourceType.displayName)
@@ -163,6 +188,10 @@ struct LibraryBrowserView: View {
 
     @ViewBuilder
     private func itemMenu(_ item: LibraryItemSummary) -> some View {
+        if library.destination == .inbox {
+            Button("Remove from Inbox") { library.removeFromInbox(item) }
+            Divider()
+        }
         Button("Download on This Mac") { startDownload(item) }
         if item.localAssetStatus == .available {
             Button("Reveal in Finder") { library.revealLocalFile(item) }
@@ -170,6 +199,12 @@ struct LibraryBrowserView: View {
         Divider()
         Button("Open Source") { library.openSource(item) }
         Button("Copy URL") { library.copySourceURL(item) }
+        Button("Rename…") {
+            renameText = item.mediaItem.title ?? ""
+            pendingRename = item
+        }
+        Button("Fetch Details") { library.refreshMetadata(item) }
+            .disabled(library.isResolvingMetadata(for: item))
         Button(item.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
             library.setFavorite(item, value: !item.isFavorite)
         }
@@ -211,8 +246,8 @@ struct LibraryBrowserView: View {
             return "Try a different title, creator, URL, or collection name."
         }
         return switch library.destination {
-        case .inbox: "New links can wait here until you organize them."
-        case .library: "Save a media link to keep it searchable, even before downloading."
+        case .inbox: "New links wait here until you organize them or remove them from Inbox. They remain saved in All Media."
+        case .library: "Every saved link appears here, including items that are still in Inbox."
         case .favorites: "Favorite useful media to find it quickly later."
         case .collection: "Add a link here or use an item's Collections menu."
         default: "Saved media will appear here."
@@ -224,6 +259,37 @@ struct LibraryBrowserView: View {
             return "magnifyingglass"
         }
         return library.destination.systemImage
+    }
+
+    private var scopeExplanation: some View {
+        HStack(spacing: 8) {
+            Image(systemName: library.destination.systemImage)
+                .foregroundStyle(VidindirTheme.accent)
+            Text(scopeDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
+    }
+
+    private var scopeDescription: String {
+        switch library.destination {
+        case .inbox:
+            "New links waiting to be organized. Every item here is already saved in All Media."
+        case .library:
+            "Every saved link, including items still waiting in Inbox."
+        case .favorites:
+            "A quick view of media you marked as a favorite."
+        case .collection:
+            "A collection organizes links without duplicating their library records."
+        default:
+            "Saved media on this Mac."
+        }
     }
 
     static func duration(_ seconds: Double?) -> String? {
@@ -294,7 +360,7 @@ private struct MediaGridCell: View {
                             .padding(7)
                     }
                 }
-                Text(item.mediaItem.title ?? item.mediaItem.sourceURL.host ?? "Untitled Media")
+                Text(item.mediaItem.displayTitle)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -390,18 +456,6 @@ struct LocalStatusLabel: View {
 
     private func color(_ status: LocalAssetStatus) -> Color {
         status == .available ? VidindirTheme.success : .secondary
-    }
-}
-
-extension SourceType {
-    var displayName: String {
-        switch self {
-        case .youtube: "YouTube"
-        case .x: "X"
-        case .vimeo: "Vimeo"
-        case .generic: "Web"
-        default: rawValue.capitalized
-        }
     }
 }
 

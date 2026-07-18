@@ -9,7 +9,7 @@ struct LibrarySidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             List(selection: $library.destination) {
-                Section {
+                Section("Library") {
                     sidebarRow(.inbox)
                     sidebarRow(.library)
                     sidebarRow(.favorites)
@@ -24,7 +24,10 @@ struct LibrarySidebarView: View {
                 Section {
                     ForEach(userCollections) { collection in
                         Label(collection.name, systemImage: collection.iconName ?? "folder")
-                            .tag(LibraryDestination.collection(collection.id))
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                library.destination = .collection(collection.id)
+                            }
                             .dropDestination(for: URL.self) { urls, _ in
                                 guard let url = urls.first else { return false }
                                 saveDropped(url: url, to: collection.id)
@@ -41,6 +44,7 @@ struct LibrarySidebarView: View {
                                     library.destination = .collection(collection.id)
                                 }
                             }
+                            .tag(LibraryDestination.collection(collection.id))
                     }
                 } header: {
                     HStack {
@@ -103,8 +107,38 @@ struct LibrarySidebarView: View {
     }
 
     private func sidebarRow(_ destination: LibraryDestination) -> some View {
-        Label(destination.title, systemImage: destination.systemImage)
+        HStack(spacing: 8) {
+            Label(destination.title, systemImage: destination.systemImage)
+            Spacer(minLength: 8)
+            if count(for: destination) > 0 {
+                Text(count(for: destination), format: .number)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+            .contentShape(Rectangle())
+            .onTapGesture { library.destination = destination }
+            .help(helpText(for: destination))
             .tag(destination)
+    }
+
+    private func count(for destination: LibraryDestination) -> Int {
+        switch destination {
+        case .inbox: library.inboxCount
+        case .library: library.libraryCount
+        case .favorites: library.favoritesCount
+        default: 0
+        }
+    }
+
+    private func helpText(for destination: LibraryDestination) -> String {
+        switch destination {
+        case .inbox: "New links waiting to be organized. They are already saved in All Media."
+        case .library: "Every saved link, including items still in Inbox."
+        case .favorites: "Saved media you marked as a favorite."
+        default: destination.title
+        }
     }
 
     private func saveDropped(url: URL, to collectionID: CollectionID) {

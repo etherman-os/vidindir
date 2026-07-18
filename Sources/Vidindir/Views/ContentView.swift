@@ -59,19 +59,9 @@ struct ContentView: View {
                     }
             }
         }
-        .sheet(isPresented: $library.isQuickAddPresented) {
-            QuickAddView(
-                library: library,
-                download: model,
-                initialLink: quickAddInitialLink
-            )
-        }
+        .overlay { transientPanelOverlay }
         .sheet(isPresented: $model.showsResponsibleUse) {
             ResponsibleUseView(accept: model.acceptResponsibleUse)
-        }
-        .sheet(isPresented: $compactInspectorPresented) {
-            MediaInspectorView(library: library, startDownload: startDownload)
-                .frame(minWidth: 320, idealWidth: 360, minHeight: 460, idealHeight: 590)
         }
         .alert(item: $model.alert) { alert in
             Alert(
@@ -98,6 +88,8 @@ struct ContentView: View {
         .onChange(of: scenePhase) {
             if scenePhase == .active {
                 inspectClipboardIfNeeded()
+            } else {
+                dismissTransientPanels()
             }
         }
         .onChange(of: library.isQuickAddPresented) {
@@ -205,6 +197,7 @@ struct ContentView: View {
 
             Button {
                 quickAddInitialLink = ""
+                compactInspectorPresented = false
                 library.isQuickAddPresented = true
             } label: {
                 Label("Add Link", systemImage: "plus")
@@ -260,6 +253,9 @@ struct ContentView: View {
 
     private func toggleInspector() {
         if windowWidth < inspectorCollapseWidth {
+            if !compactInspectorPresented {
+                library.isQuickAddPresented = false
+            }
             compactInspectorPresented.toggle()
         } else {
             inspectorPresented.toggle()
@@ -313,6 +309,55 @@ struct ContentView: View {
         model.linkText = item.mediaItem.sourceURL.absoluteString
         library.destination = .activeDownloads
         model.startDownload()
+    }
+
+    @ViewBuilder
+    private var transientPanelOverlay: some View {
+        if library.isQuickAddPresented || compactInspectorPresented {
+            GeometryReader { proxy in
+                ZStack(alignment: .topTrailing) {
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture { dismissTransientPanels() }
+
+                    Group {
+                        if library.isQuickAddPresented {
+                            QuickAddView(
+                                library: library,
+                                download: model,
+                                initialLink: quickAddInitialLink,
+                                close: dismissTransientPanels
+                            )
+                        } else {
+                            MediaInspectorView(library: library, startDownload: startDownload)
+                                .frame(
+                                    width: min(360, max(320, proxy.size.width - 32)),
+                                    height: min(560, max(360, proxy.size.height - 80))
+                                )
+                        }
+                    }
+                    .background(
+                        .regularMaterial,
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.11))
+                    }
+                    .shadow(color: .black.opacity(0.22), radius: 22, y: 10)
+                    .padding(.top, 50)
+                    .padding(.trailing, 18)
+                    .onExitCommand { dismissTransientPanels() }
+                }
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .topTrailing)))
+            .zIndex(20)
+        }
+    }
+
+    private func dismissTransientPanels() {
+        library.isQuickAddPresented = false
+        compactInspectorPresented = false
     }
 
     @ViewBuilder
@@ -404,6 +449,7 @@ struct ContentView: View {
 
     private func presentQuickAdd(url: URL) {
         quickAddInitialLink = url.absoluteString
+        compactInspectorPresented = false
         library.isQuickAddPresented = true
     }
 

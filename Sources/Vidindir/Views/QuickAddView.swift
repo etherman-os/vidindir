@@ -13,7 +13,7 @@ struct QuickAddView: View {
     @ObservedObject var library: LibraryViewModel
     @ObservedObject var download: AppModel
     let initialLink: String
-    @Environment(\.dismiss) private var dismiss
+    let close: () -> Void
     @State private var linkText = ""
     @State private var action: Action = .saveOnly
     @State private var destination: SaveDestination = .inbox
@@ -64,9 +64,9 @@ struct QuickAddView: View {
                     Text("Save to")
                         .foregroundStyle(.secondary)
                     Picker("Save to", selection: $destination) {
-                        Label("Inbox", systemImage: "tray")
+                        Label("Inbox — organize later", systemImage: "tray")
                             .tag(SaveDestination.inbox)
-                        Label("Library", systemImage: "rectangle.stack")
+                        Label("All Media — skip Inbox", systemImage: "rectangle.stack")
                             .tag(SaveDestination.libraryOnly)
                         if !userCollections.isEmpty {
                             Divider()
@@ -78,6 +78,14 @@ struct QuickAddView: View {
                     }
                     .labelsHidden()
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                GridRow {
+                    Color.clear.frame(width: 1, height: 1)
+                    Text(destinationExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 GridRow {
@@ -139,7 +147,8 @@ struct QuickAddView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { close() }
+                    .keyboardShortcut(.cancelAction)
                 Button {
                     submit(allowDuplicate: false)
                 } label: {
@@ -177,7 +186,7 @@ struct QuickAddView: View {
             Label("Already in your library", systemImage: "rectangle.on.rectangle")
                 .font(.headline)
             if let first = duplicateCandidates.first {
-                Text(first.mediaItem.title ?? first.mediaItem.sourceURL.host ?? "Saved media")
+                Text(first.mediaItem.displayTitle)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -187,7 +196,7 @@ struct QuickAddView: View {
                         library.destination = .library
                         library.selectedMediaItemID = first.mediaItem.id
                     }
-                    dismiss()
+                    close()
                 }
                 Button("Add Anyway") { submit(allowDuplicate: true) }
             }
@@ -222,7 +231,7 @@ struct QuickAddView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 if let metadata = resolvedMetadata {
-                    Text(metadata.title ?? validURL?.host ?? "Media link")
+                    Text(metadata.title ?? "Video details unavailable")
                         .font(.headline)
                         .lineLimit(2)
                     HStack(spacing: 5) {
@@ -241,7 +250,7 @@ struct QuickAddView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if let metadataMessage {
-                    Text(validURL?.host ?? "Media link")
+                    Text("Video details unavailable")
                         .font(.subheadline.weight(.medium))
                     Text(metadataMessage)
                         .font(.caption)
@@ -257,6 +266,17 @@ struct QuickAddView: View {
 
     private var userCollections: [Collection] {
         library.collections.filter { $0.kind == .user }
+    }
+
+    private var destinationExplanation: String {
+        switch destination {
+        case .inbox:
+            "Inbox is a temporary review list. The link is also saved in All Media."
+        case .libraryOnly:
+            "Save permanently without adding it to the Inbox review list."
+        case .collection:
+            "Save permanently and organize it in this collection now."
+        }
     }
 
     private var validURL: URL? {
@@ -299,7 +319,7 @@ struct QuickAddView: View {
                         library.destination = .activeDownloads
                         download.startDownload()
                     }
-                    dismiss()
+                    close()
                 }
             } catch {
                 isWorking = false

@@ -97,14 +97,17 @@ struct LibraryViewModelTests {
         let url = try #require(URL(string: "https://x.com/example/status/1234567890"))
         _ = try await fixture.libraryRepository.saveLink(SaveLinkCommand(
             sourceURL: url,
-            destination: .inbox
+            destination: .libraryOnly
         ))
 
         let model = fixture.makeModel()
         await model.bootstrapNow()
+        model.destination = .library
+        await model.reloadNow()
 
         try await eventually {
-            model.items.first?.mediaItem.title == "Resolved Video"
+            await model.reloadNow()
+            return model.items.first?.mediaItem.title == "Resolved Video"
                 && model.items.first?.mediaItem.creator == "Etherman"
                 && model.items.first?.mediaItem.metadataStatus == .resolved
         }
@@ -132,16 +135,62 @@ struct LibraryViewModelTests {
         try await Task.sleep(for: .milliseconds(20))
         #expect(model.items.first(where: { $0.id == saved.id })?.mediaItem.title == "My custom clip name")
     }
+
+    @Test @MainActor func clearingInboxKeepsTheItemInAllMediaAndUpdatesCounts() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let model = fixture.makeModel()
+        await model.bootstrapNow()
+        let url = try #require(URL(string: "https://example.com/inbox-review"))
+        let saved = try savedItem(await model.addLink(
+            url,
+            destination: .inbox,
+            metadata: ResolvedMediaMetadata(
+                title: "Review Later",
+                creator: nil,
+                durationSeconds: nil,
+                thumbnailURL: nil,
+                sourceLabel: "Generic"
+            )
+        ))
+        let inboxItem = try #require(model.items.first { $0.id == saved.id })
+        #expect(model.inboxCount == 1)
+        #expect(model.libraryCount == 1)
+
+        model.removeFromInbox(inboxItem)
+        try await eventually {
+            await model.reloadNow()
+            return model.items.isEmpty && model.inboxCount == 0 && model.libraryCount == 1
+        }
+
+        model.destination = .library
+        await model.reloadNow()
+        #expect(model.items.map(\.id) == [saved.id])
+    }
+
+    @Test func unresolvedSourceIsNeverPresentedAsTheMediaTitle() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let url = try #require(URL(string: "https://youtube.com/watch?v=presentation"))
+        let result = try await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: url,
+            destination: .libraryOnly
+        ))
+        let item = try savedItem(result)
+
+        #expect(item.displayTitle == "Fetching video details…")
+        #expect(item.displayTitle != item.sourceURL.host)
+    }
 }
 
 @MainActor
 private func eventually(
     timeout: Duration = .seconds(1),
-    condition: @escaping @MainActor () -> Bool
+    condition: @escaping @MainActor () async -> Bool
 ) async throws {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
-    while !condition() {
+    while !(await condition()) {
         guard clock.now < deadline else {
             Issue.record("Condition was not met before the timeout")
             return

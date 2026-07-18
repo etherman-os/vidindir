@@ -32,7 +32,7 @@ struct MediaInspectorView: View {
                 MediaThumbnail(item: item)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(item.mediaItem.title ?? item.mediaItem.sourceURL.host ?? "Untitled Media")
+                    Text(item.mediaItem.displayTitle)
                         .font(.title3.weight(.semibold))
                         .textSelection(.enabled)
                     if let creator = item.mediaItem.creator {
@@ -111,11 +111,19 @@ struct MediaInspectorView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                    if library.destination == .inbox {
+                        Button {
+                            library.removeFromInbox(item)
+                        } label: {
+                            Label("Remove from Inbox", systemImage: "tray.and.arrow.up")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .help("Keeps the item in All Media and removes it only from the review list.")
+                    }
+
                     HStack {
                         Button {
-                            renameText = item.mediaItem.title
-                                ?? item.mediaItem.sourceURL.host
-                                ?? "Untitled Media"
+                            renameText = item.mediaItem.title ?? ""
                             showsRename = true
                         } label: {
                             Label("Rename…", systemImage: "pencil")

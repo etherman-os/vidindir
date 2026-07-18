@@ -53,7 +53,8 @@ actor DurableDownloadRecorder {
                    description: nil,
                    durationSeconds: metadata.durationSeconds,
                    thumbnailURL: metadata.thumbnailURL,
-                   status: .resolved
+                   status: metadata.title == nil ? .failed : .resolved,
+                   errorCode: metadata.title == nil ? "missing_title" : nil
                )
            )) {
             mediaItem = updated

@@ -107,7 +107,7 @@ private struct DownloadJobRow: View {
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(item?.mediaItem.title ?? item?.mediaItem.sourceURL.host ?? "Media download")
+                    Text(item?.mediaItem.displayTitle ?? "Media download")
                         .font(.headline)
                         .lineLimit(1)
                     HStack(spacing: 7) {

@@ -27,7 +27,7 @@ enum LibraryDestination: Hashable, Identifiable {
     var title: String {
         switch self {
         case .inbox: "Inbox"
-        case .library: "Library"
+        case .library: "All Media"
         case .favorites: "Favorites"
         case .activeDownloads: "Active"
         case .completedDownloads: "Completed"
@@ -98,6 +98,9 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var downloadJobs: [DownloadJob] = []
     @Published private(set) var collections: [Collection] = []
     @Published private(set) var totalCount = 0
+    @Published private(set) var inboxCount = 0
+    @Published private(set) var libraryCount = 0
+    @Published private(set) var favoritesCount = 0
     @Published private(set) var isLoading = false
     @Published private(set) var startupError: String?
     @Published private(set) var importResult: LegacyHistoryImportResult?
@@ -256,6 +259,7 @@ final class LibraryViewModel: ObservableObject {
                !downloadJobs.contains(where: { $0.id == selectedDownloadJobID }) {
                 self.selectedDownloadJobID = nil
             }
+            await refreshNavigationCounts()
             isLoading = false
         } catch is CancellationError {
             return
@@ -292,7 +296,8 @@ final class LibraryViewModel: ObservableObject {
                        description: nil,
                        durationSeconds: metadata.durationSeconds,
                        thumbnailURL: metadata.thumbnailURL,
-                       status: .resolved
+                       status: metadata.title == nil ? .failed : .resolved,
+                       errorCode: metadata.title == nil ? "missing_title" : nil
                    )
                )) {
                 result = .saved(updated)
@@ -429,6 +434,25 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    func removeFromInbox(_ item: LibraryItemSummary) {
+        guard let libraryRepository else { return }
+        Task { [weak self] in
+            do {
+                try await libraryRepository.organizeFromInbox(
+                    mediaID: item.id,
+                    workspaceID: item.mediaItem.workspaceID,
+                    collectionIDs: []
+                )
+                await self?.reloadNow()
+            } catch {
+                self?.alert = AppAlert(
+                    title: "Could not clear this item from Inbox",
+                    message: Self.userFacingMessage(for: error)
+                )
+            }
+        }
+    }
+
     func addExistingMedia(
         _ mediaItem: MediaItem,
         to collectionID: CollectionID
@@ -518,20 +542,50 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
-    private func refreshMissingMetadataInBackground() {
-        guard metadataRefreshTask == nil, metadataResolver != nil else { return }
-        let candidates = items.filter {
-            $0.mediaItem.title == nil && $0.mediaItem.metadataStatus != .resolved
+    private func refreshNavigationCounts() async {
+        guard let libraryRepository else { return }
+        do {
+            async let inboxPage = libraryRepository.page(LibraryQuery(scope: .inbox, limit: 1))
+            async let libraryPage = libraryRepository.page(LibraryQuery(scope: .all, limit: 1))
+            async let favoritesPage = libraryRepository.page(LibraryQuery(scope: .favorites, limit: 1))
+            let (inbox, library, favorites) = try await (inboxPage, libraryPage, favoritesPage)
+            inboxCount = inbox.totalCount
+            libraryCount = library.totalCount
+            favoritesCount = favorites.totalCount
+        } catch {
+            // Counts are navigation hints. The authoritative view remains usable
+            // if a transient count query cannot be completed.
         }
-        guard !candidates.isEmpty else { return }
+    }
 
+    private func refreshMissingMetadataInBackground() {
+        guard metadataRefreshTask == nil,
+              metadataResolver != nil,
+              libraryRepository != nil else { return }
         metadataRefreshTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.metadataRefreshTask = nil }
+
+            // Inbox is only the current view, not the complete library. Resolve
+            // missing details from every scope so a link saved directly to
+            // Library never remains labelled with only its source website.
+            let page: LibraryPage
+            do {
+                guard let libraryRepository = self.libraryRepository else { return }
+                page = try await libraryRepository.page(LibraryQuery(
+                    scope: .all,
+                    limit: 100
+                ))
+            } catch {
+                return
+            }
+            let candidates = page.items.filter {
+                $0.mediaItem.title == nil && $0.mediaItem.metadataStatus != .resolved
+            }
             for item in candidates.prefix(12) {
                 guard !Task.isCancelled else { break }
                 await self.resolveAndStoreMetadata(item, reportsFailure: false)
             }
-            self.metadataRefreshTask = nil
         }
     }
 
@@ -558,11 +612,28 @@ final class LibraryViewModel: ObservableObject {
                     description: media.description,
                     durationSeconds: metadata.durationSeconds ?? media.durationSeconds,
                     thumbnailURL: metadata.thumbnailURL ?? media.thumbnailURL,
-                    status: .resolved
+                    status: (metadata.title ?? media.title) == nil ? .failed : .resolved,
+                    errorCode: (metadata.title ?? media.title) == nil ? "missing_title" : nil
                 )
             ))
             await reloadNow()
         } catch {
+            let media = item.mediaItem
+            _ = try? await libraryRepository.updateMedia(UpdateMediaCommand(
+                id: media.id,
+                workspaceID: media.workspaceID,
+                expectedRevision: media.version.revision,
+                metadata: MediaMetadataUpdate(
+                    title: media.title,
+                    creator: media.creator,
+                    description: media.description,
+                    durationSeconds: media.durationSeconds,
+                    thumbnailURL: media.thumbnailURL,
+                    status: .failed,
+                    errorCode: "metadata_unavailable"
+                )
+            ))
+            await reloadNow()
             if reportsFailure {
                 alert = AppAlert(
                     title: "Video details are unavailable",
