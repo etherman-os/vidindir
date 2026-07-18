@@ -10,12 +10,52 @@ permissions:
 
 jobs:
   test:
-    runs-on: macos-15
+    name: Test (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
       - name: Swift version
         run: swift --version
       - name: Build
         run: swift build
+      - name: Release policy tests
+        run: |
+          ./Scripts/test_release_mode.sh
+          /usr/bin/swift Scripts/verify_sparkle_feed.swift --self-test
+          /usr/bin/swift Scripts/verify_sparkle_feed.swift \
+            --feed appcast.xml \
+            --plist Support/Info.plist
       - name: Test
         run: swift test
+      - name: Package smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
+            ARCHITECTURES="arm64 x86_64" ./Scripts/package_app.sh
+            universal_executables=(
+              "dist/Vidindir.app/Contents/MacOS/Vidindir"
+              "dist/Vidindir.app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"
+              "dist/Vidindir.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
+              "dist/Vidindir.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater"
+              "dist/Vidindir.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc/Contents/MacOS/Downloader"
+              "dist/Vidindir.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc/Contents/MacOS/Installer"
+            )
+            for executable in "${universal_executables[@]}"; do
+              /usr/bin/lipo -verify_arch arm64 x86_64 "$executable"
+            done
+          else
+            ./Scripts/package_app.sh
+          fi
+          ./Scripts/create_dmg.sh
+          /usr/bin/plutil -lint dist/Vidindir.app/Contents/Info.plist
+          /usr/bin/codesign --verify --deep --strict --verbose=2 dist/Vidindir.app
+          dmg="$(/usr/bin/find dist -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          /usr/bin/hdiutil verify "$dmg"

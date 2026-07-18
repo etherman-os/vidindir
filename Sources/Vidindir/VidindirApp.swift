@@ -3,11 +3,16 @@ import SwiftUI
 @main
 struct VidindirApp: App {
     @StateObject private var model: AppModel
+    @StateObject private var appUpdater: AppUpdateController
 
     init() {
-        _model = StateObject(wrappedValue: AppModel(
+        let model = AppModel(
             downloadBackend: YTDLPBackend(),
             engineManager: HomebrewDownloadEngineManager()
+        )
+        _model = StateObject(wrappedValue: model)
+        _appUpdater = StateObject(wrappedValue: AppUpdateController(
+            activityProvider: model
         ))
     }
 
@@ -18,6 +23,12 @@ struct VidindirApp: App {
         .defaultSize(width: 700, height: 760)
         .windowResizability(.contentMinSize)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    appUpdater.checkForUpdates()
+                }
+            }
+
             CommandMenu("Download") {
                 Button("Paste Link") {
                     model.pasteFromClipboard()
@@ -41,6 +52,15 @@ struct VidindirApp: App {
                 Button("Refresh Engine Status") {
                     model.refreshEngineStatus()
                 }
+
+                Button("Update Download Engine Now…") {
+                    model.updateEngineNow()
+                }
+                .disabled(
+                    model.phase.isBusy
+                        || model.isInstallingTools
+                        || model.isCheckingEngineUpdates
+                )
             }
         }
     }

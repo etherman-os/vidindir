@@ -14,7 +14,7 @@ struct ToolSetupView: View {
             .frame(width: 40, height: 40)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(model.isInstallingTools ? "Preparing tools…" : "One-time setup")
+                Text(model.engineSetupTitle)
                     .font(.headline)
 
                 if model.isInstallingTools {
@@ -30,14 +30,24 @@ struct ToolSetupView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Button(model.canPrepareEngine ? "Prepare Engine" : "Open Setup Guide") {
-                        if model.canPrepareEngine {
-                            model.prepareEngine()
-                        } else {
-                            model.openEngineSetupGuide()
+                    HStack(spacing: 10) {
+                        Button(model.engineSetupActionLabel) {
+                            if model.canPrepareEngine {
+                                model.prepareEngine()
+                            } else {
+                                model.openEngineSetupGuide()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+
+                        if model.requiresManualEngineRepair,
+                           model.canPrepareEngine {
+                            Button("Open Setup Guide") {
+                                model.openEngineSetupGuide()
+                            }
+                            .buttonStyle(.link)
                         }
                     }
-                    .buttonStyle(.bordered)
                     .padding(.top, 3)
                 }
             }

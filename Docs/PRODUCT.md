@@ -2,7 +2,7 @@
 
 **Status:** Working roadmap
 **Last updated:** 2026-07-16
-**Product source of truth:** PROJECT_MASTER_BRIEF.md
+**Product source of truth:** This roadmap and the maintained architecture specifications
 
 ## Purpose
 
@@ -16,7 +16,7 @@ The first public release focuses on the complete personal loop. Shared discussio
 
 ## Current status
 
-Vidindir is currently a focused native SwiftUI download prototype. It is useful as a Developer Preview and as evidence that the basic local download interaction can work. It is not yet the personal media library described by the master brief, and it is not ready to be positioned as Public V1.
+Vidindir is currently a focused native SwiftUI download prototype. It is useful as a Developer Preview and as evidence that the basic local download interaction can work. It is not yet the personal media library described by this roadmap, and it is not ready to be positioned as Public V1.
 
 ### Implemented in the current prototype
 
@@ -30,6 +30,9 @@ Vidindir is currently a focused native SwiftUI download prototype. It is useful 
 - A small local download history stored in user defaults
 - Detection of yt-dlp, FFmpeg, and Deno
 - User-initiated installation of missing tools through Homebrew when Homebrew is present
+- Daily background maintenance for Homebrew-managed yt-dlp, FFmpeg, and Deno formulae, with shorter retries after failure
+- Persisted engine health and recovery checks that disable downloads when a managed tool is unhealthy
+- Sparkle-based automatic application-update checks with a signed HTTPS feed and installation deferral while download work is active
 - A responsible-use notice and local technical log
 - Process execution without passing a pasted URL through a shell
 - Product-owned `DownloadBackend` and `DownloadEngineManaging` contracts with yt-dlp behind an adapter
@@ -58,8 +61,7 @@ Vidindir is currently a focused native SwiftUI download prototype. It is useful 
 - Device-aware LocalAsset records and file verification
 - Clipboard suggestions, drag and drop, or broader capture integrations
 - iCloud or any other sync provider
-- Engine packs, integrity verification, health checks, rollback, or engine updates
-- Automatic application updates
+- Signed, versioned engine packs with integrity verification, atomic activation, retention, and rollback
 - A public installation path that does not require Homebrew or Terminal
 - Shared workspaces or collaboration
 

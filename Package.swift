@@ -12,6 +12,10 @@ let package = Package(
     ],
     dependencies: [
         .package(
+            url: "https://github.com/sparkle-project/Sparkle.git",
+            exact: "2.9.4"
+        ),
+        .package(
             url: "https://github.com/swiftlang/swift-testing.git",
             exact: "0.10.0"
         ),
@@ -19,6 +23,9 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Vidindir",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
             path: "Sources/Vidindir"
         ),
         .testTarget(

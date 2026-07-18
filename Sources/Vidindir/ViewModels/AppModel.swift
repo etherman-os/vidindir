@@ -2,6 +2,15 @@ import AppKit
 import Combine
 import Foundation
 
+struct EngineUpdateSchedule: Sendable {
+    let interval: Duration
+    let sleep: @Sendable (Duration) async throws -> Void
+
+    static let hourly = EngineUpdateSchedule(interval: .seconds(3_600)) { duration in
+        try await Task.sleep(for: duration)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var linkText = "" {
@@ -23,6 +32,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var linkValidationMessage: String?
     @Published private(set) var isInstallingTools = false
     @Published private(set) var toolInstallStatus = "Checking required tools…"
+    @Published private(set) var isCheckingEngineUpdates = false
+    @Published private(set) var engineUpdateResult: DownloadEngineUpdateResult?
+    @Published private(set) var requiresManualEngineRepair = false
+    @Published private(set) var isDownloadOperationActive = false
     @Published var showsResponsibleUse: Bool
     @Published var alert: AppAlert?
 
@@ -31,8 +44,12 @@ final class AppModel: ObservableObject {
     private let engineManager: any DownloadEngineManaging
     private let historyStore: DownloadHistoryStore
     private let defaults: UserDefaults
+    private let engineUpdateSchedule: EngineUpdateSchedule
     private var downloadTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
+    private var installOperationID: UUID?
+    private var engineUpdateTask: Task<Void, Never>?
+    private var engineUpdateSchedulerTask: Task<Void, Never>?
     private var activeRecord: DownloadRecord?
     private var didBootstrap = false
 
@@ -43,13 +60,15 @@ final class AppModel: ObservableObject {
         engineManager: any DownloadEngineManaging,
         preferences: DownloadPreferencesStore = DownloadPreferencesStore(),
         historyStore: DownloadHistoryStore = DownloadHistoryStore(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        engineUpdateSchedule: EngineUpdateSchedule = .hourly
     ) {
         self.downloadBackend = downloadBackend
         self.engineManager = engineManager
         self.preferences = preferences
         self.historyStore = historyStore
         self.defaults = defaults
+        self.engineUpdateSchedule = engineUpdateSchedule
 
         let format = preferences.selectedFormat
         selectedFormat = format
@@ -59,9 +78,17 @@ final class AppModel: ObservableObject {
         showsResponsibleUse = !defaults.bool(forKey: Self.responsibleUseKey)
     }
 
+    deinit {
+        downloadTask?.cancel()
+        installTask?.cancel()
+        engineUpdateTask?.cancel()
+        engineUpdateSchedulerTask?.cancel()
+    }
+
     var canStartDownload: Bool {
         !phase.isBusy
             && !isInstallingTools
+            && !isCheckingEngineUpdates
             && engineStatus.isReady
             && !linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -72,13 +99,55 @@ final class AppModel: ObservableObject {
 
     var canPrepareEngine: Bool {
         engineManager.canPrepareAutomatically
+            && !phase.isBusy
+            && !downloadBackend.isDownloading
+            && !isInstallingTools
+            && !isCheckingEngineUpdates
     }
 
     var missingToolsDescription: String {
         let names = engineStatus.missingComponents
         guard !names.isEmpty else { return "All required tools are ready." }
         let list = ListFormatter.localizedString(byJoining: names)
-        return "Vidindir needs \(list) to download and convert media. The engine setup can prepare them for you."
+        if requiresManualEngineRepair {
+            return "\(list) still needs manual repair. Open the setup guide, repair the listed component, then refresh the engine status."
+        }
+        switch engineStatus.recoveryKind {
+        case .assessInterruptedMutation:
+            return "A previous engine change was interrupted. Vidindir must verify \(list) before downloads can continue."
+        case .repairUnhealthyComponents:
+            return "\(list) did not pass its health check. Vidindir can repair Homebrew-managed components without touching your downloads."
+        case .installMissingComponents, nil:
+            return "Vidindir needs \(list) to download and convert media. The engine setup can prepare them for you."
+        }
+    }
+
+    var engineSetupTitle: String {
+        if isInstallingTools { return "Preparing engine…" }
+        switch engineStatus.recoveryKind {
+        case .assessInterruptedMutation, .repairUnhealthyComponents:
+            return "Engine repair"
+        case .installMissingComponents, nil:
+            return "One-time setup"
+        }
+    }
+
+    var engineSetupActionLabel: String {
+        guard canPrepareEngine else { return "Open Setup Guide" }
+        if requiresManualEngineRepair { return "Recheck Engine" }
+        switch engineStatus.recoveryKind {
+        case .assessInterruptedMutation, .repairUnhealthyComponents:
+            return "Repair Engine"
+        case .installMissingComponents, nil:
+            return "Prepare Engine"
+        }
+    }
+
+    var engineUpdateMessage: String {
+        if isCheckingEngineUpdates {
+            return "Checking for download engine updates…"
+        }
+        return engineUpdateResult?.message ?? "Automatic engine updates are enabled."
     }
 
     var postProcessingLabel: String {
@@ -89,10 +158,15 @@ final class AppModel: ObservableObject {
         guard !didBootstrap else { return }
         didBootstrap = true
         refreshEngineStatus()
+        startEngineUpdateScheduler()
     }
 
     func refreshEngineStatus() {
         engineStatus = engineManager.currentStatus()
+        if engineStatus.isReady
+            || engineStatus.recoveryKind != .repairUnhealthyComponents {
+            requiresManualEngineRepair = false
+        }
     }
 
     func selectFormat(_ format: DownloadFormat) {
@@ -133,7 +207,7 @@ final class AppModel: ObservableObject {
     }
 
     func startDownload() {
-        guard !phase.isBusy else { return }
+        guard !phase.isBusy, !isCheckingEngineUpdates else { return }
         guard engineStatus.isReady else {
             alert = AppAlert(
                 title: "Tools are not ready",
@@ -168,6 +242,7 @@ final class AppModel: ObservableObject {
             destinationDirectory: destinationDirectory
         )
 
+        isDownloadOperationActive = true
         phase = .preparing
         metrics = .empty
         currentTitle = request.sourceURL.host ?? "Media"
@@ -182,24 +257,28 @@ final class AppModel: ObservableObject {
             status: .preparing
         )
 
-        downloadTask = Task { [weak self] in
-            guard let self else { return }
+        let backend = downloadBackend
+        downloadTask = Task { [weak self, backend] in
             do {
-                _ = try await downloadBackend.download(request) { [weak self] event in
+                _ = try await backend.download(request) { [weak self] event in
                     Task { @MainActor [weak self] in
                         self?.handleDownloadEvent(event)
                     }
                 }
             } catch is CancellationError {
+                guard let self else { return }
                 if self.phase.isBusy {
                     self.handleDownloadEvent(.cancelled)
                 }
             } catch {
+                guard let self else { return }
                 if self.phase.isBusy {
                     self.finishFailure(error.localizedDescription)
                 }
             }
+            guard let self else { return }
             self.downloadTask = nil
+            self.isDownloadOperationActive = false
         }
     }
 
@@ -246,24 +325,36 @@ final class AppModel: ObservableObject {
     }
 
     func prepareEngine() {
-        guard !isInstallingTools else { return }
-        guard canPrepareEngine else {
+        guard !phase.isBusy,
+              !downloadBackend.isDownloading,
+              !isInstallingTools,
+              !isCheckingEngineUpdates else { return }
+        guard engineManager.canPrepareAutomatically else {
             openEngineSetupGuide()
             return
         }
 
         isInstallingTools = true
-        toolInstallStatus = "Homebrew is downloading the required packages…"
+        toolInstallStatus = engineStatus.recoveryKind == .installMissingComponents
+            ? "Homebrew is downloading the required packages…"
+            : "Checking the download engine…"
         processLog = ""
-        installTask = Task { [weak self] in
-            guard let self else { return }
+        let operationID = UUID()
+        installOperationID = operationID
+        let manager = engineManager
+        installTask = Task { [weak self, manager] in
             do {
-                try await engineManager.prepare { [weak self] line in
+                try await manager.prepare { [weak self] line in
                     Task { @MainActor [weak self] in
-                        self?.appendLog(line)
-                        self?.toolInstallStatus = Self.friendlyInstallStatus(for: line)
+                        guard let self,
+                              self.installOperationID == operationID,
+                              self.isInstallingTools else { return }
+                        self.appendLog(line)
+                        self.toolInstallStatus = Self.friendlyInstallStatus(for: line)
                     }
                 }
+                guard let self,
+                      self.installOperationID == operationID else { return }
                 self.refreshEngineStatus()
                 if self.engineStatus.isReady {
                     self.toolInstallStatus = "Tools are ready."
@@ -271,22 +362,90 @@ final class AppModel: ObservableObject {
                     throw DownloadEngineError.componentsStillMissing
                 }
             } catch is CancellationError {
+                guard let self,
+                      self.installOperationID == operationID else { return }
                 self.toolInstallStatus = "Tool setup was cancelled."
             } catch {
+                guard let self,
+                      self.installOperationID == operationID else { return }
+                self.refreshEngineStatus()
+                if let engineError = error as? DownloadEngineError {
+                    switch engineError {
+                    case .manualRepairRequired, .automaticRepairFailed:
+                        self.requiresManualEngineRepair = true
+                    case .componentsStillMissing, .operationInProgress:
+                        break
+                    }
+                }
                 self.alert = AppAlert(
                     title: "Tool setup failed",
                     message: error.localizedDescription
                 )
                 self.toolInstallStatus = "Setup did not finish."
             }
+            guard let self,
+                  self.installOperationID == operationID else { return }
+            self.installOperationID = nil
             self.isInstallingTools = false
             self.installTask = nil
         }
     }
 
+    /// Runs the same updater used by the background schedule, bypassing its
+    /// daily cadence when explicitly requested by the user.
+    func updateEngineNow() {
+        checkForEngineUpdates(force: true)
+    }
+
     func openEngineSetupGuide() {
         guard let url = engineManager.setupGuideURL else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private func startEngineUpdateScheduler() {
+        guard engineUpdateSchedulerTask == nil else { return }
+        let schedule = engineUpdateSchedule
+        engineUpdateSchedulerTask = Task { @MainActor [weak self] in
+            defer {
+                self?.engineUpdateSchedulerTask = nil
+            }
+            while !Task.isCancelled {
+                guard self != nil else { return }
+                self?.checkForEngineUpdates(force: false)
+
+                do {
+                    // The persistent policy performs real Homebrew work at
+                    // most daily. Hourly wakeups also cover apps left open for
+                    // several days and retry transient failures after six hours.
+                    try await schedule.sleep(schedule.interval)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func checkForEngineUpdates(force: Bool) {
+        guard engineUpdateTask == nil,
+              !phase.isBusy,
+              !downloadBackend.isDownloading,
+              !isInstallingTools else { return }
+
+        isCheckingEngineUpdates = true
+        let manager = engineManager
+        engineUpdateTask = Task { [weak self, manager] in
+            let result = await manager.checkForUpdates(force: force)
+            guard !Task.isCancelled, let self else { return }
+
+            self.engineUpdateResult = result
+            // Readiness can change even when the high-level result is a
+            // failure (for example, cancellation after a package mutation
+            // leaves a persisted health check pending). Always re-read the
+            // manager after a completed check.
+            self.refreshEngineStatus()
+            self.isCheckingEngineUpdates = false
+            self.engineUpdateTask = nil
+        }
     }
 
     private func setDestinationDirectory(_ directory: URL) {
@@ -417,5 +576,28 @@ final class AppModel: ObservableObject {
         if line.contains("Installing") { return "Installing packages…" }
         if line.contains("Pouring") { return "Finishing installation…" }
         return "Homebrew is working…"
+    }
+}
+
+extension AppModel: AppUpdateActivityProviding {
+    var shouldDeferAppUpdateInstallation: Bool {
+        isDownloadOperationActive
+            || downloadBackend.isDownloading
+            || isInstallingTools
+            || isCheckingEngineUpdates
+    }
+
+    var appUpdateActivityChanges: AnyPublisher<Void, Never> {
+        Publishers.CombineLatest3(
+            $isDownloadOperationActive,
+            $isInstallingTools,
+            $isCheckingEngineUpdates
+        )
+        .map { downloadActive, engineInstallActive, engineUpdateActive in
+            downloadActive || engineInstallActive || engineUpdateActive
+        }
+        .removeDuplicates()
+        .map { _ in () }
+        .eraseToAnyPublisher()
     }
 }

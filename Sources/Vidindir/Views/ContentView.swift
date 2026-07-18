@@ -72,7 +72,14 @@ struct ContentView: View {
 
     @ViewBuilder
     private var toolStatus: some View {
-        if model.engineStatus.isReady {
+        if model.isCheckingEngineUpdates {
+            Label("Updating Engine…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.09), in: Capsule())
+        } else if model.engineStatus.isReady {
             Label("Ready", systemImage: "checkmark.circle.fill")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(VidindirTheme.success)
@@ -89,6 +96,18 @@ struct ContentView: View {
             Text("Powered by yt-dlp · FFmpeg · Deno")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+            if model.engineStatus.isReady || model.engineUpdateResult != nil {
+                Text(model.engineUpdateMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            HStack(spacing: 5) {
+                Link("Built by etherman-os", destination: URL(string: "https://github.com/etherman-os")!)
+                Text("·")
+                    .foregroundStyle(.tertiary)
+                Link("etherman.org", destination: URL(string: "https://etherman.org")!)
+            }
+            .font(.caption2.weight(.medium))
         }
         .foregroundStyle(.secondary)
         .padding(.top, 2)

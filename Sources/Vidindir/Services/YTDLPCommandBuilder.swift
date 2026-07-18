@@ -4,15 +4,18 @@ public struct ProcessInvocation: Equatable, Sendable {
     public let executableURL: URL
     public let arguments: [String]
     public let currentDirectoryURL: URL?
+    public let environment: [String: String]?
 
     public init(
         executableURL: URL,
         arguments: [String],
-        currentDirectoryURL: URL? = nil
+        currentDirectoryURL: URL? = nil,
+        environment: [String: String]? = nil
     ) {
         self.executableURL = executableURL
         self.arguments = arguments
         self.currentDirectoryURL = currentDirectoryURL
+        self.environment = environment
     }
 }
 
