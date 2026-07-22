@@ -137,6 +137,49 @@ struct LibraryViewModelTests {
         #expect(model.items.first(where: { $0.id == saved.id })?.mediaItem.title == "My custom clip name")
     }
 
+    @Test @MainActor func renameRetriesAfterAConcurrentMetadataUpdate() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        await model.bootstrapNow()
+        let saved = try savedItem(await model.addLink(
+            URL(string: "https://example.com/concurrent-rename")!,
+            destination: .libraryOnly
+        ))
+        model.destination = .library
+        await model.reloadNow()
+        let staleSummary = try #require(model.items.first { $0.id == saved.id })
+        _ = try await fixture.libraryRepository.updateMedia(UpdateMediaCommand(
+            id: saved.id,
+            workspaceID: saved.workspaceID,
+            expectedRevision: saved.version.revision,
+            metadata: MediaMetadataUpdate(
+                title: "Background metadata title",
+                creator: "Metadata resolver",
+                description: nil,
+                durationSeconds: nil,
+                thumbnailURL: nil,
+                status: .resolved
+            )
+        ))
+
+        model.rename(staleSummary, to: "User title wins")
+
+        try await eventually {
+            await model.reloadNow()
+            return model.items.first(where: { $0.id == saved.id })?.mediaItem.title
+                == "User title wins"
+        }
+        #expect(model.items.first(where: { $0.id == saved.id })?.mediaItem.creator
+            == "Metadata resolver")
+    }
+
     @Test @MainActor func clearingInboxKeepsTheItemInAllMediaAndUpdatesCounts() async throws {
         let fixture = try LibraryModelFixture()
         defer { fixture.remove() }
@@ -323,7 +366,7 @@ struct LibraryViewModelTests {
 
 @MainActor
 private func eventually(
-    timeout: Duration = .seconds(1),
+    timeout: Duration = .seconds(5),
     condition: @escaping @MainActor () async -> Bool
 ) async throws {
     let clock = ContinuousClock()

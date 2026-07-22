@@ -202,7 +202,7 @@ final class LibraryViewModel: ObservableObject {
             collections = try await libraryRepository.collections(
                 workspaceID: VidindirIdentity.personalWorkspace
             )
-            await reloadNow()
+            await performReload()
             refreshMissingMetadataInBackground()
         } catch {
             isLoading = false
@@ -218,6 +218,12 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func reloadNow() async {
+        loadTask?.cancel()
+        loadTask = nil
+        await performReload()
+    }
+
+    private func performReload() async {
         guard let libraryRepository, let downloadRepository else {
             isLoading = false
             return
@@ -421,7 +427,7 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func rename(_ item: LibraryItemSummary, to rawTitle: String) {
-        guard let libraryRepository else { return }
+        guard libraryRepository != nil else { return }
         let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.utf8.count <= 4_096 else {
             alert = AppAlert(
@@ -431,24 +437,12 @@ final class LibraryViewModel: ObservableObject {
             return
         }
         Task { [weak self] in
+            guard let self else { return }
             do {
-                let media = item.mediaItem
-                _ = try await libraryRepository.updateMedia(UpdateMediaCommand(
-                    id: media.id,
-                    workspaceID: media.workspaceID,
-                    expectedRevision: media.version.revision,
-                    metadata: MediaMetadataUpdate(
-                        title: title,
-                        creator: media.creator,
-                        description: media.description,
-                        durationSeconds: media.durationSeconds,
-                        thumbnailURL: media.thumbnailURL,
-                        status: .resolved
-                    )
-                ))
-                await self?.reloadNow()
+                try await self.persistRename(item.mediaItem, title: title)
+                await self.reloadNow()
             } catch {
-                self?.alert = AppAlert(
+                self.alert = AppAlert(
                     title: "Could not rename this item",
                     message: Self.userFacingMessage(for: error)
                 )
@@ -801,6 +795,40 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    private func persistRename(_ original: MediaItem, title: String) async throws {
+        guard let libraryRepository else {
+            throw LibraryDomainError.recordNotFound
+        }
+        var media = original
+        for attempt in 0..<2 {
+            do {
+                _ = try await libraryRepository.updateMedia(UpdateMediaCommand(
+                    id: media.id,
+                    workspaceID: media.workspaceID,
+                    expectedRevision: media.version.revision,
+                    metadata: MediaMetadataUpdate(
+                        title: title,
+                        creator: media.creator,
+                        description: media.description,
+                        durationSeconds: media.durationSeconds,
+                        thumbnailURL: media.thumbnailURL,
+                        status: .resolved
+                    )
+                ))
+                return
+            } catch LibraryDomainError.concurrentModification where attempt == 0 {
+                let summaries = try await libraryRepository.summaries(
+                    mediaItemIDs: [media.id],
+                    workspaceID: media.workspaceID
+                )
+                guard let latest = summaries.first?.mediaItem else {
+                    throw LibraryDomainError.recordNotFound
+                }
+                media = latest
+            }
+        }
+    }
+
     private func scheduleReload(immediately: Bool) {
         guard didBootstrap else { return }
         loadTask?.cancel()
@@ -809,7 +837,7 @@ final class LibraryViewModel: ObservableObject {
                 try? await Task.sleep(for: .milliseconds(180))
             }
             guard !Task.isCancelled else { return }
-            await self?.reloadNow()
+            await self?.performReload()
         }
     }
 
