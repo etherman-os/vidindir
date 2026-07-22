@@ -4,30 +4,55 @@ public struct ArtifactResolver: Sendable {
     public init() {}
 
     public func resolve(path: String, inside destinationDirectory: URL) throws -> URL {
-        let destination = destinationDirectory.standardizedFileURL
-        guard destination.isFileURL,
-              (destination.path as NSString).isAbsolutePath else {
+        let destination = destinationDirectory
+            .standardizedFileURL
+        let resolvedDestination = resolveExistingAncestors(of: destination)
+        guard resolvedDestination.isFileURL,
+              (resolvedDestination.path as NSString).isAbsolutePath else {
             throw ArtifactResolverError.invalidDestination
         }
 
         let artifact: URL
         if (path as NSString).isAbsolutePath {
-            artifact = URL(fileURLWithPath: path, isDirectory: false).standardizedFileURL
+            artifact = URL(fileURLWithPath: path, isDirectory: false)
+                .standardizedFileURL
         } else {
-            artifact = destination
+            artifact = resolvedDestination
                 .appendingPathComponent(path, isDirectory: false)
                 .standardizedFileURL
         }
+        let resolvedArtifact = resolveExistingAncestors(of: artifact)
 
-        let destinationPath = destination.path.hasSuffix("/")
-            ? String(destination.path.dropLast())
-            : destination.path
-        let artifactPath = artifact.path
+        let destinationPath = resolvedDestination.path.hasSuffix("/")
+            ? String(resolvedDestination.path.dropLast())
+            : resolvedDestination.path
+        let artifactPath = resolvedArtifact.path
         guard artifactPath != destinationPath,
               artifactPath.hasPrefix(destinationPath + "/") else {
             throw ArtifactResolverError.outsideDestination
         }
-        return artifact
+        return resolvedArtifact
+    }
+
+    /// `URL.resolvingSymlinksInPath()` leaves the path untouched when its final
+    /// component does not exist. yt-dlp reports planned paths before creating
+    /// them, so resolve the nearest existing ancestor and append only the
+    /// genuinely missing suffix.
+    private func resolveExistingAncestors(of url: URL) -> URL {
+        var ancestor = url
+        var missingComponents: [String] = []
+
+        while ancestor.path != "/",
+              !FileManager.default.fileExists(atPath: ancestor.path) {
+            missingComponents.append(ancestor.lastPathComponent)
+            ancestor.deleteLastPathComponent()
+        }
+
+        var resolved = ancestor.resolvingSymlinksInPath().standardizedFileURL
+        for component in missingComponents.reversed() {
+            resolved.appendPathComponent(component)
+        }
+        return resolved.standardizedFileURL
     }
 }
 

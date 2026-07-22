@@ -901,7 +901,6 @@ struct HomebrewEngineUpdateServiceTests {
                 defaults: defaults,
                 fallbackDirectory: FileManager.default.temporaryDirectory
             ),
-            historyStore: DownloadHistoryStore(defaults: defaults),
             defaults: defaults
         )
 

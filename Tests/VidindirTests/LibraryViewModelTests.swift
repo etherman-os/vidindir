@@ -170,6 +170,142 @@ struct LibraryViewModelTests {
         #expect(model.items.map(\.id) == [saved.id])
     }
 
+    @Test @MainActor func paginatesPastTheFirstHundredLibraryItems() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        for index in 0..<105 {
+            _ = try await fixture.libraryRepository.saveLink(SaveLinkCommand(
+                sourceURL: URL(string: "https://example.com/page-item-\(index)")!,
+                destination: .libraryOnly
+            ))
+        }
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        model.destination = .library
+        await model.bootstrapNow()
+
+        #expect(model.items.count == 100)
+        #expect(model.totalCount == 105)
+        #expect(model.canLoadMore)
+
+        model.loadMore()
+        try await eventually {
+            model.items.count == 105 && !model.isLoadingMore
+        }
+        #expect(!model.canLoadMore)
+    }
+
+    @Test @MainActor func collectionDownloadSourceLoadsEveryPageAndIgnoresViewSearch() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let setupModel = fixture.makeModel()
+        await setupModel.bootstrapNow()
+        let collection = try #require(await setupModel.createCollection(named: "Batch"))
+        for index in 0..<501 {
+            _ = try await fixture.libraryRepository.saveLink(SaveLinkCommand(
+                sourceURL: URL(string: "https://example.com/batch-item-\(index)")!,
+                destination: .collection(collection.id)
+            ))
+        }
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        await model.bootstrapNow()
+        model.destination = .collection(collection.id)
+        model.searchText = "does-not-match"
+        await model.reloadNow()
+        #expect(model.items.isEmpty)
+
+        let allItems = try await model.allItemsInCurrentCollection()
+
+        #expect(allItems.count == 501)
+        #expect(Set(allItems.map(\.id)).count == 501)
+    }
+
+    @Test @MainActor func downloadCountsSeparateActiveCompletedAndAttentionStates() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let item = try await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/count-downloads")!,
+            destination: .libraryOnly
+        ))
+        let media = try savedItem(item)
+        let active = try await fixture.downloadRepository.createJob(CreateDownloadJobCommand(
+            mediaItemID: media.id,
+            mediaKind: .video,
+            container: "mp4",
+            requestJSON: #"{"format":"video"}"#,
+            destinationBookmark: nil,
+            destinationPath: "/tmp"
+        ))
+        let cancelled = try await fixture.downloadRepository.createJob(CreateDownloadJobCommand(
+            mediaItemID: media.id,
+            mediaKind: .video,
+            container: "mp4",
+            requestJSON: #"{"format":"video"}"#,
+            destinationBookmark: nil,
+            destinationPath: "/tmp"
+        ))
+        _ = try await fixture.downloadRepository.transitionJob(
+            id: cancelled.id,
+            from: .created,
+            to: .cancelled
+        )
+
+        let model = fixture.makeModel()
+        await model.bootstrapNow()
+
+        #expect(model.activeDownloadCount == 1)
+        #expect(model.completedDownloadCount == 0)
+        #expect(model.failedDownloadCount == 1)
+        #expect(active.state == .created)
+
+        model.destination = .failedDownloads
+        await model.reloadNow()
+        #expect(model.downloadJobs.map(\.id) == [cancelled.id])
+
+        model.clearDownloadHistory(.needsAttention)
+        try await eventually {
+            model.failedDownloadCount == 0 && model.downloadJobs.isEmpty
+        }
+    }
+
+    @Test @MainActor func deletingTheOpenCollectionReturnsToAllMedia() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let model = fixture.makeModel()
+        await model.bootstrapNow()
+        let saved = try savedItem(await model.addLink(
+            URL(string: "https://example.com/collection-delete")!,
+            destination: .libraryOnly
+        ))
+        let collection = try #require(await model.createCollection(named: "Temporary"))
+        try await fixture.libraryRepository.setCollectionMembership(MembershipCommand(
+            workspaceID: saved.workspaceID,
+            mediaItemID: saved.id,
+            collectionID: collection.id,
+            isMember: true
+        ))
+        model.destination = .collection(collection.id)
+        await model.reloadNow()
+
+        model.deleteCollection(collection)
+        try await eventually {
+            model.destination == .library
+                && !model.collections.contains { $0.id == collection.id }
+                && model.items.map(\.id) == [saved.id]
+        }
+    }
+
     @Test func unresolvedSourceIsNeverPresentedAsTheMediaTitle() async throws {
         let fixture = try LibraryModelFixture()
         defer { fixture.remove() }

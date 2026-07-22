@@ -115,6 +115,22 @@ public struct CreateCollectionCommand: Equatable, Hashable, Sendable {
     }
 }
 
+public struct DeleteCollectionCommand: Equatable, Hashable, Sendable {
+    public let id: CollectionID
+    public let workspaceID: WorkspaceID
+    public let expectedRevision: Int64
+
+    public init(
+        id: CollectionID,
+        workspaceID: WorkspaceID,
+        expectedRevision: Int64
+    ) {
+        self.id = id
+        self.workspaceID = workspaceID
+        self.expectedRevision = expectedRevision
+    }
+}
+
 public struct MembershipCommand: Equatable, Hashable, Sendable {
     public let workspaceID: WorkspaceID
     public let mediaItemID: MediaItemID
@@ -200,6 +216,7 @@ public protocol LibraryRepository: Sendable {
     func saveLink(_ command: SaveLinkCommand) async throws -> SaveLinkResult
     func updateMedia(_ command: UpdateMediaCommand) async throws -> MediaItem
     func createCollection(_ command: CreateCollectionCommand) async throws -> Collection
+    func tombstoneCollection(_ command: DeleteCollectionCommand) async throws
     func collections(workspaceID: WorkspaceID) async throws -> [Collection]
     func setFavorite(mediaID: MediaItemID, workspaceID: WorkspaceID, value: Bool) async throws
     func setCollectionMembership(_ command: MembershipCommand) async throws
@@ -214,4 +231,8 @@ public protocol LibraryRepository: Sendable {
         expectedRevision: Int64
     ) async throws
     func page(_ query: LibraryQuery) async throws -> LibraryPage
+    func summaries(
+        mediaItemIDs: Set<MediaItemID>,
+        workspaceID: WorkspaceID
+    ) async throws -> [LibraryItemSummary]
 }

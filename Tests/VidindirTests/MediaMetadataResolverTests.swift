@@ -29,6 +29,9 @@ struct MediaMetadataResolverTests {
         #expect(invocation.arguments.contains("--ignore-config"))
         #expect(invocation.arguments.contains("--no-playlist"))
         #expect(invocation.arguments.contains("--skip-download"))
+        #expect(invocation.arguments.contains("--no-remote-components"))
+        #expect(!invocation.arguments.contains("--remote-components"))
+        #expect(!invocation.arguments.contains("ejs:npm"))
         #expect(invocation.arguments.contains("--print"))
         #expect(invocation.arguments.contains(where: { $0.contains("{id,title,uploader") }))
     }

@@ -6,6 +6,17 @@ import VidindirDomain
 
 @Suite("Library database bootstrap and migrations")
 struct LibraryDatabaseTests {
+    @Test func explicitDatabaseOverrideRequiresAnAbsolutePath() {
+        let isolatedPath = "/private/tmp/vidindir-smoke/Library.sqlite"
+
+        #expect(LibraryDatabase.defaultURL(environment: [
+            "VIDINDIR_LIBRARY_DATABASE_PATH": isolatedPath,
+        ]) == URL(fileURLWithPath: isolatedPath).standardizedFileURL)
+        #expect(LibraryDatabase.defaultURL(environment: [
+            "VIDINDIR_LIBRARY_DATABASE_PATH": "relative/Library.sqlite",
+        ]).path != "relative/Library.sqlite")
+    }
+
     @Test func freshBootstrapCreatesThePersonalFoundationIdempotently() throws {
         let fixture = try PersistenceFixture()
         defer { fixture.remove() }
@@ -72,6 +83,32 @@ struct LibraryDatabaseTests {
         #expect(try fixture.database.pool.read { db in
             try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty
         })
+    }
+
+    @Test func currentSchemaIncludesTheDurableFIFOQueueMigration() throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+
+        let values = try fixture.database.pool.read { db in
+            (
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT name FROM pragma_table_info('download_jobs')"
+                ),
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'download_jobs_fifo'"
+                ),
+                try String.fetchAll(
+                    db,
+                    sql: "SELECT identifier FROM grdb_migrations ORDER BY identifier"
+                )
+            )
+        }
+
+        #expect(values.0.contains("queue_position"))
+        #expect(values.1 == "download_jobs_fifo")
+        #expect(values.2 == ["v001_initial", "v002_download_queue_position"])
     }
 
     private func assertBootstrap(database: LibraryDatabase) throws {

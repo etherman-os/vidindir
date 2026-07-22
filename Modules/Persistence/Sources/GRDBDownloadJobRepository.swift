@@ -26,11 +26,11 @@ public actor GRDBDownloadJobRepository: DownloadJobRepository {
         let deviceID = currentDeviceID.description
 
         return try await pool.write { db in
-            guard let mediaExists = try Bool.fetchOne(
+            guard let mediaWorkspaceID = try String.fetchOne(
                 db,
-                sql: "SELECT EXISTS(SELECT 1 FROM media_items WHERE id = ? AND deleted_at IS NULL)",
+                sql: "SELECT workspace_id FROM media_items WHERE id = ? AND deleted_at IS NULL",
                 arguments: [command.mediaItemID.description]
-            ), mediaExists else {
+            ) else {
                 throw LibraryDomainError.recordNotFound
             }
 
@@ -41,8 +41,13 @@ public actor GRDBDownloadJobRepository: DownloadJobRepository {
                 ) else {
                     throw LibraryDomainError.recordNotFound
                 }
+                let parentWorkspaceID = try String.fetchOne(
+                    db,
+                    sql: "SELECT workspace_id FROM media_items WHERE id = ? AND deleted_at IS NULL",
+                    arguments: [parent.mediaItemID]
+                )
                 guard parent.deviceID == deviceID,
-                      parent.mediaItemID == command.mediaItemID.description else {
+                      parentWorkspaceID == mediaWorkspaceID else {
                     throw LibraryDomainError.invalidDownloadRequest
                 }
             }
@@ -55,6 +60,7 @@ public actor GRDBDownloadJobRepository: DownloadJobRepository {
                 backendID: Self.normalizedOptional(command.backendID),
                 engineVersion: Self.normalizedOptional(command.engineVersion),
                 state: DownloadJobState.created.rawValue,
+                queuePosition: nil,
                 mediaKind: command.mediaKind.rawValue,
                 container: Self.normalizedOptional(command.container),
                 qualityPreset: command.qualityPreset.rawValue,
@@ -108,12 +114,13 @@ public actor GRDBDownloadJobRepository: DownloadJobRepository {
             if newState == .queued {
                 assignments += [
                     "queued_at = ?",
+                    "queue_position = (SELECT COALESCE(MAX(queue_position), 0) + 1 FROM download_jobs WHERE device_id = ?)",
                     "retry_after = NULL",
                     "error_category = NULL",
                     "error_summary = NULL",
                     "technical_detail = NULL",
                 ]
-                arguments += [timestamp]
+                arguments += [timestamp, deviceID]
             }
             if newState == .downloading {
                 assignments += [
@@ -308,24 +315,118 @@ public actor GRDBDownloadJobRepository: DownloadJobRepository {
         }
         let deviceID = currentDeviceID.description
         return try await pool.read { db in
-            var conditions = ["device_id = ?"]
-            var arguments: StatementArguments = [deviceID]
-            if !query.states.isEmpty {
-                let states = query.states.sorted().map(\.rawValue)
-                conditions.append("state IN (\(Array(repeating: "?", count: states.count).joined(separator: ", ")))")
-                arguments += StatementArguments(states)
+            guard let filter = Self.jobFilter(query: query, deviceID: deviceID) else {
+                return []
             }
+            var arguments = filter.arguments
             arguments += [query.limit, query.offset]
             return try DownloadJobRecord.fetchAll(
                 db,
                 sql: """
-                    SELECT * FROM download_jobs
-                    WHERE \(conditions.joined(separator: " AND "))
-                    ORDER BY created_at DESC, id DESC
+                    SELECT j.*
+                    FROM download_jobs j
+                    JOIN media_items m ON m.id = j.media_item_id
+                    WHERE \(filter.predicate)
+                    ORDER BY j.created_at DESC, j.id DESC
                     LIMIT ? OFFSET ?
                     """,
                 arguments: arguments
             ).map { try $0.domain() }
+        }
+    }
+
+    public func jobCount(_ query: DownloadJobQuery) async throws -> Int {
+        guard query.offset >= 0 else {
+            throw LibraryDomainError.invalidPagination
+        }
+        let deviceID = currentDeviceID.description
+        return try await pool.read { db in
+            guard let filter = Self.jobFilter(query: query, deviceID: deviceID) else {
+                return 0
+            }
+            return try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*)
+                    FROM download_jobs j
+                    JOIN media_items m ON m.id = j.media_item_id
+                    WHERE \(filter.predicate)
+                    """,
+                arguments: filter.arguments
+            ) ?? 0
+        }
+    }
+
+    public func job(id: DownloadJobID) async throws -> DownloadJob {
+        let deviceID = currentDeviceID.description
+        return try await pool.read { db in
+            try Self.requireJob(db: db, id: id, deviceID: deviceID).domain()
+        }
+    }
+
+    public func nextQueuedJob() async throws -> DownloadJob? {
+        let deviceID = currentDeviceID.description
+        return try await pool.read { db in
+            try DownloadJobRecord.fetchOne(
+                db,
+                sql: """
+                    SELECT j.*
+                    FROM download_jobs j
+                    JOIN media_items m ON m.id = j.media_item_id
+                    WHERE j.device_id = ? AND j.state = 'queued'
+                      AND m.deleted_at IS NULL
+                    ORDER BY j.queue_position, j.created_at, j.id
+                    LIMIT 1
+                    """,
+                arguments: [deviceID]
+            ).map { try $0.domain() }
+        }
+    }
+
+    public func clearHistory(
+        scope: DownloadHistoryScope
+    ) async throws -> ClearDownloadHistoryResult {
+        let deviceID = currentDeviceID.description
+        let states = scope.states.sorted().map(\.rawValue)
+        let placeholders = Array(repeating: "?", count: states.count).joined(separator: ", ")
+
+        return try await pool.write { db in
+            var candidateArguments: StatementArguments = [deviceID]
+            candidateArguments += StatementArguments(states)
+            let candidateCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*) FROM download_jobs
+                    WHERE device_id = ? AND state IN (\(placeholders))
+                    """,
+                arguments: candidateArguments
+            ) ?? 0
+
+            var deletedCount = 0
+            while true {
+                var deleteArguments: StatementArguments = [deviceID]
+                deleteArguments += StatementArguments(states)
+                try db.execute(
+                    sql: """
+                        DELETE FROM download_jobs AS candidate
+                        WHERE candidate.device_id = ?
+                          AND candidate.state IN (\(placeholders))
+                          AND NOT EXISTS (
+                              SELECT 1 FROM download_jobs child
+                              WHERE child.parent_job_id = candidate.id
+                          )
+                        """,
+                    arguments: deleteArguments
+                )
+                let deletedThisPass = db.changesCount
+                deletedCount += deletedThisPass
+                if deletedThisPass == 0 { break }
+            }
+
+            return ClearDownloadHistoryResult(
+                deletedCount: deletedCount,
+                retainedReferencedCount: candidateCount - deletedCount
+            )
         }
     }
 
@@ -392,6 +493,40 @@ public actor GRDBDownloadJobRepository: DownloadJobRepository {
         .completed: [],
         .cancelled: [],
     ]
+
+    private static func jobFilter(
+        query: DownloadJobQuery,
+        deviceID: String
+    ) -> (predicate: String, arguments: StatementArguments)? {
+        var conditions = [
+            "j.device_id = ?",
+            "m.workspace_id = ?",
+            "m.deleted_at IS NULL",
+        ]
+        var arguments: StatementArguments = [
+            deviceID,
+            query.workspaceID.description,
+        ]
+        if !query.states.isEmpty {
+            let states = query.states.sorted().map(\.rawValue)
+            conditions.append(
+                "j.state IN (\(Array(repeating: "?", count: states.count).joined(separator: ", ")))"
+            )
+            arguments += StatementArguments(states)
+        }
+        if let searchText = query.searchText?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ), !searchText.isEmpty {
+            guard let pattern = FTS5Pattern(matchingAllPrefixesIn: searchText) else {
+                return nil
+            }
+            conditions.append(
+                "j.media_item_id IN (SELECT media_item_id FROM media_search WHERE media_search MATCH ? AND workspace_id = ?)"
+            )
+            arguments += [pattern, query.workspaceID.description]
+        }
+        return (conditions.joined(separator: " AND "), arguments)
+    }
 
     private static func requireJob(
         db: Database,

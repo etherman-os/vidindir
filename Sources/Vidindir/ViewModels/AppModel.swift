@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import VidindirDomain
 
 struct EngineUpdateSchedule: Sendable {
     let interval: Duration
@@ -28,7 +29,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var metrics: DownloadMetrics = .empty
     @Published private(set) var currentTitle = ""
     @Published private(set) var currentOutputURL: URL?
-    @Published private(set) var history: [DownloadRecord]
     @Published private(set) var processLog = ""
     @Published private(set) var linkValidationMessage: String?
     @Published private(set) var isInstallingTools = false
@@ -37,24 +37,27 @@ final class AppModel: ObservableObject {
     @Published private(set) var engineUpdateResult: DownloadEngineUpdateResult?
     @Published private(set) var requiresManualEngineRepair = false
     @Published private(set) var isDownloadOperationActive = false
+    @Published private(set) var isEnqueuingDownload = false
+    @Published private(set) var hasPendingDownloads = false
+    @Published private(set) var downloadActivityRevision: UInt64 = 0
     @Published var showsResponsibleUse: Bool
     @Published var alert: AppAlert?
 
     private let preferences: DownloadPreferencesStore
     private let downloadBackend: any DownloadBackend
     private let engineManager: any DownloadEngineManaging
-    private let historyStore: DownloadHistoryStore
     private let defaults: UserDefaults
     private let engineUpdateSchedule: EngineUpdateSchedule
-    private let durableDownloads: DurableDownloadRecorder?
+    private let downloadCoordinator: DownloadCoordinator?
     private var downloadTask: Task<Void, Never>?
-    private var persistenceEventTask: Task<Void, Never>?
+    private var enqueueTask: Task<Void, Never>?
+    private var coordinatorEventsTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
     private var installOperationID: UUID?
     private var engineUpdateTask: Task<Void, Never>?
     private var engineUpdateSchedulerTask: Task<Void, Never>?
-    private var activeRecord: DownloadRecord?
     private var didBootstrap = false
+    private var currentDownloadJobID: DownloadJobID?
 
     private static let responsibleUseKey = "legal.responsibleUseAccepted"
 
@@ -62,38 +65,37 @@ final class AppModel: ObservableObject {
         downloadBackend: any DownloadBackend,
         engineManager: any DownloadEngineManaging,
         preferences: DownloadPreferencesStore = DownloadPreferencesStore(),
-        historyStore: DownloadHistoryStore = DownloadHistoryStore(),
         defaults: UserDefaults = .standard,
         engineUpdateSchedule: EngineUpdateSchedule = .hourly,
-        durableDownloads: DurableDownloadRecorder? = nil
+        downloadCoordinator: DownloadCoordinator? = nil
     ) {
         self.downloadBackend = downloadBackend
         self.engineManager = engineManager
         self.preferences = preferences
-        self.historyStore = historyStore
         self.defaults = defaults
         self.engineUpdateSchedule = engineUpdateSchedule
-        self.durableDownloads = durableDownloads
+        self.downloadCoordinator = downloadCoordinator
 
         let format = preferences.selectedFormat
         selectedFormat = format
         selectedQuality = preferences.quality(for: format)
         destinationDirectory = preferences.destinationDirectory(for: format)
         engineStatus = engineManager.currentStatus()
-        history = historyStore.load()
         showsResponsibleUse = !defaults.bool(forKey: Self.responsibleUseKey)
     }
 
     deinit {
         downloadTask?.cancel()
-        persistenceEventTask?.cancel()
+        enqueueTask?.cancel()
+        coordinatorEventsTask?.cancel()
         installTask?.cancel()
         engineUpdateTask?.cancel()
         engineUpdateSchedulerTask?.cancel()
     }
 
     var canStartDownload: Bool {
-        !phase.isBusy
+        !isEnqueuingDownload
+            && (downloadCoordinator != nil || !phase.isBusy)
             && !isInstallingTools
             && !isCheckingEngineUpdates
             && engineStatus.isReady
@@ -108,6 +110,7 @@ final class AppModel: ObservableObject {
         engineManager.canPrepareAutomatically
             && !phase.isBusy
             && !downloadBackend.isDownloading
+            && !hasPendingDownloads
             && !isInstallingTools
             && !isCheckingEngineUpdates
     }
@@ -165,6 +168,7 @@ final class AppModel: ObservableObject {
         guard !didBootstrap else { return }
         didBootstrap = true
         refreshEngineStatus()
+        startDownloadCoordinator()
         startEngineUpdateScheduler()
     }
 
@@ -220,8 +224,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func startDownload() {
-        guard !phase.isBusy, !isCheckingEngineUpdates else { return }
+    func startDownload(mediaItemID: MediaItemID? = nil) {
+        guard !isEnqueuingDownload,
+              (downloadCoordinator != nil || !phase.isBusy),
+              !isCheckingEngineUpdates else { return }
         guard engineStatus.isReady else {
             alert = AppAlert(
                 title: "Tools are not ready",
@@ -257,6 +263,15 @@ final class AppModel: ObservableObject {
             destinationDirectory: destinationDirectory
         )
 
+        if let downloadCoordinator {
+            enqueue(
+                request,
+                mediaItemID: mediaItemID,
+                using: downloadCoordinator
+            )
+            return
+        }
+
         isDownloadOperationActive = true
         phase = .preparing
         metrics = .empty
@@ -264,54 +279,21 @@ final class AppModel: ObservableObject {
         currentOutputURL = nil
         processLog = ""
         linkValidationMessage = nil
-        activeRecord = DownloadRecord(
-            sourceURL: request.sourceURL,
-            format: request.format,
-            destinationDirectory: request.destinationDirectory,
-            title: currentTitle,
-            status: .preparing
-        )
-
         let backend = downloadBackend
-        let durableDownloads = durableDownloads
-        downloadTask = Task { [weak self, backend, durableDownloads] in
+        downloadTask = Task { [weak self, backend] in
             do {
-                if let durableDownloads {
-                    try await durableDownloads.begin(request)
-                }
-                let completedRecord = try await backend.download(request) { [weak self] event in
+                _ = try await backend.download(request) { [weak self] event in
                     Task { @MainActor [weak self] in
-                        if durableDownloads != nil {
-                            self?.recordDurableEvent(event)
-                            if case .completed = event {
-                                return
-                            }
-                        }
                         self?.handleDownloadEvent(event)
                     }
                 }
-                if let durableDownloads {
-                    if let pendingPersistence = self?.persistenceEventTask {
-                        await pendingPersistence.value
-                    }
-                    try await durableDownloads.complete(completedRecord)
-                    guard let self else { return }
-                    self.persistenceEventTask = nil
-                    self.handleDownloadEvent(.completed(completedRecord))
-                }
             } catch is CancellationError {
-                await durableDownloads?.cancel()
                 guard let self else { return }
-                self.persistenceEventTask?.cancel()
-                self.persistenceEventTask = nil
                 if self.phase.isBusy {
                     self.handleDownloadEvent(.cancelled)
                 }
             } catch {
-                await durableDownloads?.fail(error)
                 guard let self else { return }
-                self.persistenceEventTask?.cancel()
-                self.persistenceEventTask = nil
                 if self.phase.isBusy {
                     self.finishFailure(error.localizedDescription)
                 }
@@ -324,12 +306,90 @@ final class AppModel: ObservableObject {
 
     func cancelDownload() {
         guard phase.isBusy else { return }
+        if let downloadCoordinator, let currentDownloadJobID {
+            Task { await downloadCoordinator.cancel(currentDownloadJobID) }
+            phase = .cancelled
+            return
+        }
         downloadBackend.cancelCurrentDownload()
         downloadTask?.cancel()
-        let durableDownloads = durableDownloads
-        Task { await durableDownloads?.cancel() }
         phase = .cancelled
-        finishActiveRecord(status: .cancelled)
+    }
+
+    func retryDownload(_ id: DownloadJobID) {
+        guard let downloadCoordinator else { return }
+        Task { [weak self, downloadCoordinator] in
+            do {
+                _ = try await downloadCoordinator.retry(id)
+            } catch {
+                self?.alert = AppAlert(
+                    title: "Could not retry the download",
+                    message: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    func startDownloads(_ items: [LibraryItemSummary]) {
+        guard !items.isEmpty,
+              !isEnqueuingDownload,
+              !isCheckingEngineUpdates else { return }
+        guard engineStatus.isReady else {
+            alert = AppAlert(
+                title: "Tools are not ready",
+                message: "Prepare the missing tools before queueing this collection."
+            )
+            return
+        }
+        guard let downloadCoordinator else {
+            alert = AppAlert(
+                title: "Download queue is unavailable",
+                message: "The library database must be available to download a collection."
+            )
+            return
+        }
+        guard FileManager.default.isWritableFile(atPath: destinationDirectory.path) else {
+            alert = AppAlert(
+                title: "Folder is not writable",
+                message: "Choose another download folder and try again."
+            )
+            return
+        }
+
+        _ = try? preferences.remember(
+            format: selectedFormat,
+            destinationDirectory: destinationDirectory
+        )
+        let entries = items.map { item in
+            DownloadBatchEntry(
+                request: DownloadRequest(
+                    sourceURL: item.mediaItem.sourceURL,
+                    format: selectedFormat,
+                    quality: selectedQuality,
+                    destinationDirectory: destinationDirectory
+                ),
+                mediaItemID: item.id
+            )
+        }
+
+        isEnqueuingDownload = true
+        enqueueTask = Task { [weak self, downloadCoordinator] in
+            let result = await downloadCoordinator.enqueueBatch(entries)
+            guard let self else { return }
+            if !result.failures.isEmpty {
+                let queuedCount = result.queuedJobIDs.count
+                let failedCount = result.failures.count
+                let firstFailure = result.failures[0].summary
+                self.alert = AppAlert(
+                    title: queuedCount == 0
+                        ? "Collection could not be queued"
+                        : "Some downloads could not be queued",
+                    message: "Queued \(queuedCount); skipped \(failedCount). \(firstFailure)"
+                )
+            }
+            self.isEnqueuingDownload = false
+            self.enqueueTask = nil
+        }
     }
 
     func resetForNewDownload() {
@@ -340,20 +400,10 @@ final class AppModel: ObservableObject {
         currentOutputURL = nil
         processLog = ""
         linkText = ""
-        activeRecord = nil
     }
 
     func revealCurrentDownload() {
         revealURL(currentOutputURL ?? destinationDirectory)
-    }
-
-    func reveal(_ record: DownloadRecord) {
-        revealURL(record.outputFileURL ?? record.destinationDirectory)
-    }
-
-    func clearHistory() {
-        history = []
-        historyStore.clear()
     }
 
     func copyProcessLog() {
@@ -369,6 +419,7 @@ final class AppModel: ObservableObject {
     func prepareEngine() {
         guard !phase.isBusy,
               !downloadBackend.isDownloading,
+              !hasPendingDownloads,
               !isInstallingTools,
               !isCheckingEngineUpdates else { return }
         guard engineManager.canPrepareAutomatically else {
@@ -444,6 +495,104 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    private func enqueue(
+        _ request: DownloadRequest,
+        mediaItemID: MediaItemID?,
+        using coordinator: DownloadCoordinator
+    ) {
+        isEnqueuingDownload = true
+        linkValidationMessage = nil
+        enqueueTask = Task { [weak self, coordinator] in
+            do {
+                _ = try await coordinator.enqueue(
+                    request,
+                    mediaItemID: mediaItemID
+                )
+                guard let self else { return }
+                self.linkText = ""
+            } catch {
+                guard let self else { return }
+                self.alert = AppAlert(
+                    title: "Could not queue the download",
+                    message: error.localizedDescription
+                )
+            }
+            guard let self else { return }
+            self.isEnqueuingDownload = false
+            self.enqueueTask = nil
+        }
+    }
+
+    private func startDownloadCoordinator() {
+        guard coordinatorEventsTask == nil,
+              let downloadCoordinator else { return }
+        coordinatorEventsTask = Task { @MainActor [weak self, downloadCoordinator] in
+            let events = await downloadCoordinator.events()
+            await downloadCoordinator.start()
+            for await event in events {
+                guard !Task.isCancelled else { return }
+                self?.handleCoordinatorEvent(event)
+            }
+        }
+    }
+
+    private func handleCoordinatorEvent(_ event: DownloadCoordinatorEvent) {
+        switch event {
+        case .idle:
+            hasPendingDownloads = false
+
+        case .queued:
+            hasPendingDownloads = true
+            downloadActivityRevision &+= 1
+
+        case .started(let jobID, let request):
+            currentDownloadJobID = jobID
+            hasPendingDownloads = true
+            isDownloadOperationActive = true
+            phase = .preparing
+            metrics = .empty
+            currentTitle = request.sourceURL.host ?? "Media"
+            currentOutputURL = nil
+            processLog = ""
+            downloadActivityRevision &+= 1
+
+        case .backend(let jobID, let backendEvent):
+            guard currentDownloadJobID == jobID else { return }
+            handleDownloadEvent(backendEvent)
+
+        case .completed(let jobID, let record):
+            guard currentDownloadJobID == jobID else { return }
+            handleDownloadEvent(.completed(record))
+            currentDownloadJobID = nil
+            isDownloadOperationActive = false
+            downloadActivityRevision &+= 1
+
+        case .failed(let jobID, let message):
+            guard currentDownloadJobID == jobID || currentDownloadJobID == nil else { return }
+            finishFailure(message)
+            if currentDownloadJobID == jobID {
+                currentDownloadJobID = nil
+                isDownloadOperationActive = false
+            }
+            downloadActivityRevision &+= 1
+
+        case .cancelled(let jobID):
+            if currentDownloadJobID == jobID {
+                handleDownloadEvent(.cancelled)
+                currentDownloadJobID = nil
+                isDownloadOperationActive = false
+            }
+            downloadActivityRevision &+= 1
+
+        case .queueUnavailable(let message):
+            hasPendingDownloads = false
+            alert = AppAlert(
+                title: "Download queue is unavailable",
+                message: message
+            )
+        }
+    }
+
     private func startEngineUpdateScheduler() {
         guard engineUpdateSchedulerTask == nil else { return }
         let schedule = engineUpdateSchedule
@@ -471,6 +620,7 @@ final class AppModel: ObservableObject {
         guard engineUpdateTask == nil,
               !phase.isBusy,
               !downloadBackend.isDownloading,
+              !hasPendingDownloads,
               !isInstallingTools else { return }
 
         isCheckingEngineUpdates = true
@@ -501,8 +651,7 @@ final class AppModel: ObservableObject {
 
     private func handleDownloadEvent(_ event: DownloadBackendEvent) {
         switch event {
-        case .started(let record):
-            activeRecord = record
+        case .started:
             phase = .preparing
 
         case .progress(let progress):
@@ -522,7 +671,6 @@ final class AppModel: ObservableObject {
 
         case .plannedArtifact(let url):
             currentTitle = url.deletingPathExtension().lastPathComponent
-            activeRecord?.title = currentTitle
 
         case .postProcessing:
             phase = .postProcessing
@@ -540,8 +688,6 @@ final class AppModel: ObservableObject {
             currentOutputURL = record.outputFileURL
             phase = .completed
             metrics.fractionCompleted = 1
-            addToHistory(record)
-            activeRecord = nil
 
         case .failed(let message):
             finishFailure(message)
@@ -549,53 +695,13 @@ final class AppModel: ObservableObject {
         case .cancelled:
             if phase != .cancelled {
                 phase = .cancelled
-                finishActiveRecord(status: .cancelled)
             }
-        }
-    }
-
-    private func recordDurableEvent(_ event: DownloadBackendEvent) {
-        guard let durableDownloads else { return }
-        let previous = persistenceEventTask
-        switch event {
-        case .progress(let progress):
-            persistenceEventTask = Task {
-                await previous?.value
-                guard !Task.isCancelled else { return }
-                await durableDownloads.recordProgress(progress)
-            }
-        case .postProcessing:
-            persistenceEventTask = Task {
-                await previous?.value
-                guard !Task.isCancelled else { return }
-                await durableDownloads.recordPostProcessing()
-            }
-        default:
-            break
         }
     }
 
     private func finishFailure(_ rawMessage: String) {
         let message = friendlyDownloadError(rawMessage)
         phase = .failed(message)
-        finishActiveRecord(status: .failed)
-    }
-
-    private func finishActiveRecord(status: DownloadStatus) {
-        guard var record = activeRecord else { return }
-        record.title = currentTitle
-        record.status = status
-        record.outputFileURL = currentOutputURL
-        record.finishedAt = Date()
-        addToHistory(record)
-        activeRecord = nil
-    }
-
-    private func addToHistory(_ record: DownloadRecord) {
-        history.removeAll { $0.id == record.id }
-        history.insert(record, at: 0)
-        history = Array(history.prefix(30))
-        historyStore.save(history)
     }
 
     private func appendLog(_ line: String) {

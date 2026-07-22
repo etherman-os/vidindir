@@ -29,4 +29,32 @@ struct ArtifactResolverTests {
             try resolver.resolve(path: "/tmp/downloader/escape.mp4", inside: destination)
         }
     }
+
+    @Test func rejectsASymlinkThatEscapesTheDestination() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VidindirArtifactResolver-\(UUID().uuidString)")
+        let destination = root.appendingPathComponent("Downloads", isDirectory: true)
+        let outside = root.appendingPathComponent("Outside", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: outside,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createSymbolicLink(
+            at: destination.appendingPathComponent("escape"),
+            withDestinationURL: outside
+        )
+
+        #expect(throws: ArtifactResolverError.outsideDestination) {
+            try ArtifactResolver().resolve(
+                path: "escape/video.mp4",
+                inside: destination
+            )
+        }
+    }
 }

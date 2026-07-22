@@ -21,8 +21,11 @@ public struct ProcessInvocation: Equatable, Sendable {
 
 public struct YTDLPCommandBuilder: Sendable {
     public static let outputTemplate = "%(title).180B [%(id)s].%(ext)s"
+    private let environment: [String: String]
 
-    public init() {}
+    public init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.environment = environment
+    }
 
     public func build(
         _ request: DownloadRequest,
@@ -50,7 +53,7 @@ public struct YTDLPCommandBuilder: Sendable {
             "--output", Self.outputTemplate,
             "--ffmpeg-location", ffmpeg.path,
             "--js-runtimes", "deno:\(deno.path)",
-            "--remote-components", "ejs:npm",
+            "--no-remote-components",
             "--progress-template", Self.progressTemplate,
             "--print", Self.plannedArtifactTemplate,
             "--print", Self.postProcessingTemplate,
@@ -79,7 +82,8 @@ public struct YTDLPCommandBuilder: Sendable {
         return ProcessInvocation(
             executableURL: ytDLP,
             arguments: arguments,
-            currentDirectoryURL: request.destinationDirectory
+            currentDirectoryURL: request.destinationDirectory,
+            environment: YTDLPProcessEnvironment.constrained(inheriting: environment)
         )
     }
 
@@ -114,6 +118,31 @@ public struct YTDLPCommandBuilder: Sendable {
 
     private static let finalArtifactTemplate =
         #"after_move:__VIDINDIR_YTDLP__{"event":"artifact","path":%(filepath)j}"#
+}
+
+enum YTDLPProcessEnvironment {
+    private static let inheritedKeys = [
+        "HOME",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "PATH",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    ]
+
+    static func constrained(inheriting environment: [String: String]) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: inheritedKeys.compactMap { key in
+            environment[key].map { (key, $0) }
+        })
+    }
 }
 
 public enum YTDLPCommandBuilderError: LocalizedError, Equatable, Sendable {

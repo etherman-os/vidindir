@@ -207,6 +207,7 @@ public struct DownloadJob: Identifiable, Codable, Equatable, Hashable, Sendable 
     public let backendID: String?
     public let engineVersion: String?
     public let state: DownloadJobState
+    public let queuePosition: Int64?
     public let mediaKind: MediaKind
     public let container: String?
     public let qualityPreset: QualityPreset
@@ -239,6 +240,7 @@ public struct DownloadJob: Identifiable, Codable, Equatable, Hashable, Sendable 
         backendID: String?,
         engineVersion: String?,
         state: DownloadJobState,
+        queuePosition: Int64? = nil,
         mediaKind: MediaKind,
         container: String?,
         qualityPreset: QualityPreset,
@@ -270,6 +272,7 @@ public struct DownloadJob: Identifiable, Codable, Equatable, Hashable, Sendable 
         self.backendID = backendID
         self.engineVersion = engineVersion
         self.state = state
+        self.queuePosition = queuePosition
         self.mediaKind = mediaKind
         self.container = container
         self.qualityPreset = qualityPreset

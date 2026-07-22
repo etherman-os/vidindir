@@ -85,6 +85,9 @@ struct ContentView: View {
         .onChange(of: model.phase) {
             library.reload()
         }
+        .onChange(of: model.downloadActivityRevision) {
+            library.reload()
+        }
         .onChange(of: scenePhase) {
             if scenePhase == .active {
                 inspectClipboardIfNeeded()
@@ -127,7 +130,8 @@ struct ContentView: View {
             LibraryBrowserView(
                 library: library,
                 displayMode: displayMode,
-                startDownload: startDownload
+                startDownload: startDownload,
+                startCollectionDownload: startCollectionDownload
             )
         }
     }
@@ -308,7 +312,13 @@ struct ContentView: View {
     private func startDownload(_ item: LibraryItemSummary) {
         model.linkText = item.mediaItem.sourceURL.absoluteString
         library.destination = .activeDownloads
-        model.startDownload()
+        model.startDownload(mediaItemID: item.id)
+    }
+
+    private func startCollectionDownload(_ items: [LibraryItemSummary]) {
+        guard !items.isEmpty else { return }
+        library.destination = .activeDownloads
+        model.startDownloads(items)
     }
 
     @ViewBuilder

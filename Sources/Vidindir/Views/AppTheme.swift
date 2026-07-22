@@ -73,16 +73,3 @@ private struct ShoreLine: Shape {
         return path
     }
 }
-
-struct SectionLabel: View {
-    let title: String
-    let systemImage: String
-
-    var body: some View {
-        Label(title, systemImage: systemImage)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
-            .tracking(0.7)
-    }
-}
