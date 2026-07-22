@@ -313,8 +313,13 @@ struct LibraryViewModelTests {
         #expect(active.state == .created)
 
         model.destination = .failedDownloads
-        await model.reloadNow()
-        #expect(model.downloadJobs.map(\.id) == [cancelled.id])
+        // Bootstrap also starts metadata repair. Its reload may legitimately
+        // supersede this reload, so assert the observable settled state instead
+        // of racing that independent background task.
+        try await eventually {
+            await model.reloadNow()
+            return model.downloadJobs.map(\.id) == [cancelled.id]
+        }
 
         model.clearDownloadHistory(.needsAttention)
         try await eventually {
