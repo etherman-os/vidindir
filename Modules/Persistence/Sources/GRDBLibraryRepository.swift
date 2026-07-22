@@ -227,6 +227,109 @@ public actor GRDBLibraryRepository: LibraryRepository {
         }
     }
 
+    public func tombstoneCollection(_ command: DeleteCollectionCommand) async throws {
+        let timestamp = now().sqliteMilliseconds
+        let deviceID = currentDeviceID.description
+        let makeUUID = makeUUID
+
+        try await pool.write { db in
+            guard let collection = try CollectionRecord.fetchOne(
+                db,
+                key: command.id.description
+            ), collection.deletedAt == nil else {
+                throw LibraryDomainError.recordNotFound
+            }
+            guard collection.workspaceID == command.workspaceID.description else {
+                throw LibraryDomainError.crossWorkspaceRelationship
+            }
+            guard CollectionKind(rawValue: collection.kind) == .user else {
+                throw LibraryDomainError.protectedCollection
+            }
+            guard collection.revision == command.expectedRevision else {
+                throw LibraryDomainError.concurrentModification
+            }
+
+            let memberships = try CollectionMembershipRecord.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM collection_memberships
+                    WHERE collection_id = ? AND workspace_id = ? AND deleted_at IS NULL
+                    ORDER BY id
+                    """,
+                arguments: [command.id.description, command.workspaceID.description]
+            )
+
+            let collectionRevision = collection.revision + 1
+            try db.execute(
+                sql: """
+                    UPDATE collections
+                    SET revision = ?, modified_at = ?, modified_by_device = ?, deleted_at = ?
+                    WHERE id = ? AND revision = ? AND deleted_at IS NULL
+                    """,
+                arguments: [
+                    collectionRevision,
+                    timestamp,
+                    deviceID,
+                    timestamp,
+                    command.id.description,
+                    command.expectedRevision,
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw LibraryDomainError.concurrentModification
+            }
+            try Self.appendChange(
+                db: db,
+                changeID: makeUUID(),
+                workspaceID: command.workspaceID,
+                entityType: "collection",
+                entityID: command.id.description,
+                revision: collectionRevision,
+                operation: .tombstone,
+                timestamp: timestamp
+            )
+
+            var affectedMediaIDs = Set<MediaItemID>()
+            for membership in memberships {
+                let revision = membership.revision + 1
+                try db.execute(
+                    sql: """
+                        UPDATE collection_memberships
+                        SET revision = ?, modified_at = ?, modified_by_device = ?, deleted_at = ?
+                        WHERE id = ? AND revision = ? AND deleted_at IS NULL
+                        """,
+                    arguments: [
+                        revision,
+                        timestamp,
+                        deviceID,
+                        timestamp,
+                        membership.id,
+                        membership.revision,
+                    ]
+                )
+                guard db.changesCount == 1,
+                      let mediaID = MediaItemID(uuidString: membership.mediaItemID) else {
+                    throw LibraryPersistenceError.invalidStoredRecord
+                }
+                affectedMediaIDs.insert(mediaID)
+                try Self.appendChange(
+                    db: db,
+                    changeID: makeUUID(),
+                    workspaceID: command.workspaceID,
+                    entityType: "collection_membership",
+                    entityID: membership.id,
+                    revision: revision,
+                    operation: .tombstone,
+                    timestamp: timestamp
+                )
+            }
+
+            for mediaID in affectedMediaIDs {
+                try Self.refreshSearch(db: db, mediaItemID: mediaID)
+            }
+        }
+    }
+
     public func setFavorite(
         mediaID: MediaItemID,
         workspaceID: WorkspaceID,
@@ -474,62 +577,109 @@ public actor GRDBLibraryRepository: LibraryRepository {
                     """,
                 arguments: pageArguments
             )
-            let items = try records.map { record in
-                let item = try record.domain()
-                let favoriteCount = try Int.fetchOne(
-                    db,
-                    sql: """
-                        SELECT COUNT(*) FROM favorites
-                        WHERE media_item_id = ? AND deleted_at IS NULL
-                        """,
-                    arguments: [record.id]
-                ) ?? 0
-                let collectionStrings = try String.fetchAll(
-                    db,
-                    sql: """
-                        SELECT cm.collection_id
-                        FROM collection_memberships cm
-                        JOIN collections c ON c.id = cm.collection_id
-                        WHERE cm.media_item_id = ?
-                          AND cm.deleted_at IS NULL
-                          AND c.deleted_at IS NULL
-                        ORDER BY c.sort_order, c.name COLLATE NOCASE, c.id
-                        """,
-                    arguments: [record.id]
-                )
-                let collectionIDs = try collectionStrings.map { value -> CollectionID in
-                    guard let id = CollectionID(uuidString: value) else {
-                        throw LibraryPersistenceError.invalidStoredRecord
-                    }
-                    return id
-                }
-                let localStatus = try String.fetchOne(
-                    db,
-                    sql: """
-                        SELECT status FROM local_assets
-                        WHERE media_item_id = ? AND device_id = ?
-                        ORDER BY downloaded_at DESC, id DESC LIMIT 1
-                        """,
-                    arguments: [record.id, currentDeviceID]
-                ).map { LocalAssetStatus(rawValue: $0) }
-                let jobState = try String.fetchOne(
-                    db,
-                    sql: """
-                        SELECT state FROM download_jobs
-                        WHERE media_item_id = ? AND device_id = ?
-                        ORDER BY created_at DESC, id DESC LIMIT 1
-                        """,
-                    arguments: [record.id, currentDeviceID]
-                ).map { DownloadJobState(rawValue: $0) }
-                return LibraryItemSummary(
-                    mediaItem: item,
-                    isFavorite: favoriteCount > 0,
-                    collectionIDs: collectionIDs,
-                    localAssetStatus: localStatus,
-                    latestDownloadState: jobState
-                )
-            }
+            let items = try Self.makeSummaries(
+                db: db,
+                records: records,
+                currentDeviceID: currentDeviceID
+            )
             return LibraryPage(items: items, totalCount: totalCount)
+        }
+    }
+
+    public func summaries(
+        mediaItemIDs: Set<MediaItemID>,
+        workspaceID: WorkspaceID
+    ) async throws -> [LibraryItemSummary] {
+        guard mediaItemIDs.count <= 500 else {
+            throw LibraryDomainError.invalidPagination
+        }
+        guard !mediaItemIDs.isEmpty else { return [] }
+        let currentDeviceID = currentDeviceID.description
+        let ids = mediaItemIDs.map(\.description).sorted()
+        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+
+        return try await pool.read { db in
+            var arguments: StatementArguments = [workspaceID.description]
+            arguments += StatementArguments(ids)
+            let records = try MediaItemRecord.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM media_items
+                    WHERE workspace_id = ? AND deleted_at IS NULL
+                      AND id IN (\(placeholders))
+                    ORDER BY created_at DESC, id
+                    """,
+                arguments: arguments
+            )
+            return try Self.makeSummaries(
+                db: db,
+                records: records,
+                currentDeviceID: currentDeviceID
+            )
+        }
+    }
+
+    private static func makeSummaries(
+        db: Database,
+        records: [MediaItemRecord],
+        currentDeviceID: String
+    ) throws -> [LibraryItemSummary] {
+        try records.map { record in
+            let item = try record.domain()
+            let favoriteCount = try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT COUNT(*) FROM favorites
+                    WHERE media_item_id = ? AND deleted_at IS NULL
+                    """,
+                arguments: [record.id]
+            ) ?? 0
+            let collectionStrings = try String.fetchAll(
+                db,
+                sql: """
+                    SELECT cm.collection_id
+                    FROM collection_memberships cm
+                    JOIN collections c ON c.id = cm.collection_id
+                    WHERE cm.media_item_id = ?
+                      AND cm.deleted_at IS NULL
+                      AND c.deleted_at IS NULL
+                    ORDER BY c.sort_order, c.name COLLATE NOCASE, c.id
+                    """,
+                arguments: [record.id]
+            )
+            let collectionIDs = try collectionStrings.map { value -> CollectionID in
+                guard let id = CollectionID(uuidString: value) else {
+                    throw LibraryPersistenceError.invalidStoredRecord
+                }
+                return id
+            }
+            let localStatus = try String.fetchOne(
+                db,
+                sql: """
+                    SELECT status FROM local_assets
+                    WHERE media_item_id = ? AND device_id = ?
+                    ORDER BY CASE WHEN status = 'available' THEN 0 ELSE 1 END,
+                             downloaded_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                arguments: [record.id, currentDeviceID]
+            ).map { LocalAssetStatus(rawValue: $0) }
+            let jobState = try String.fetchOne(
+                db,
+                sql: """
+                    SELECT state FROM download_jobs
+                    WHERE media_item_id = ? AND device_id = ?
+                    ORDER BY created_at DESC, id DESC LIMIT 1
+                    """,
+                arguments: [record.id, currentDeviceID]
+            ).map { DownloadJobState(rawValue: $0) }
+            return LibraryItemSummary(
+                mediaItem: item,
+                isFavorite: favoriteCount > 0,
+                collectionIDs: collectionIDs,
+                localAssetStatus: localStatus,
+                latestDownloadState: jobState
+            )
         }
     }
 

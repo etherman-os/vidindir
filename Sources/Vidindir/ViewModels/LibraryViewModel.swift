@@ -31,7 +31,7 @@ enum LibraryDestination: Hashable, Identifiable {
         case .favorites: "Favorites"
         case .activeDownloads: "Active"
         case .completedDownloads: "Completed"
-        case .failedDownloads: "Failed"
+        case .failedDownloads: "Needs Attention"
         case .collection: "Collection"
         }
     }
@@ -101,7 +101,11 @@ final class LibraryViewModel: ObservableObject {
     @Published private(set) var inboxCount = 0
     @Published private(set) var libraryCount = 0
     @Published private(set) var favoritesCount = 0
+    @Published private(set) var activeDownloadCount = 0
+    @Published private(set) var completedDownloadCount = 0
+    @Published private(set) var failedDownloadCount = 0
     @Published private(set) var isLoading = false
+    @Published private(set) var isLoadingMore = false
     @Published private(set) var startupError: String?
     @Published private(set) var importResult: LegacyHistoryImportResult?
     @Published private(set) var resolvingMetadataIDs: Set<MediaItemID> = []
@@ -116,6 +120,15 @@ final class LibraryViewModel: ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var metadataRefreshTask: Task<Void, Never>?
     private var loadGeneration = UUID()
+
+    private static let pageSize = 100
+    private static let activeDownloadStates: Set<DownloadJobState> = [
+        .created, .resolving, .ready, .queued, .downloading,
+        .postProcessing, .paused,
+    ]
+    private static let attentionDownloadStates: Set<DownloadJobState> = [
+        .failed, .cancelled, .interrupted,
+    ]
 
     init(
         libraryRepository: (any LibraryRepository)?,
@@ -157,8 +170,18 @@ final class LibraryViewModel: ObservableObject {
         return collections.first { $0.id == id }?.name ?? "Collection"
     }
 
+    var currentCollection: Collection? {
+        guard case .collection(let id) = destination else { return nil }
+        return collections.first { $0.id == id && $0.kind == .user }
+    }
+
     var isDownloadDestination: Bool {
         destination.libraryScope == nil
+    }
+
+    var canLoadMore: Bool {
+        let loadedCount = isDownloadDestination ? downloadJobs.count : items.count
+        return loadedCount < totalCount
     }
 
     func bootstrap() {
@@ -170,15 +193,12 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func bootstrapNow() async {
-        guard isAvailable,
-              let libraryRepository,
-              let downloadRepository else { return }
+        guard isAvailable, let libraryRepository else { return }
         isLoading = true
         do {
             if let legacyImporter {
                 importResult = try await legacyImporter.importHistoryData(legacyHistoryData)
             }
-            _ = try await downloadRepository.interruptActiveJobsAfterLaunch()
             collections = try await libraryRepository.collections(
                 workspaceID: VidindirIdentity.personalWorkspace
             )
@@ -211,45 +231,30 @@ final class LibraryViewModel: ObservableObject {
                 let page = try await libraryRepository.page(LibraryQuery(
                     scope: scope,
                     searchText: searchText,
-                    limit: 500
+                    limit: Self.pageSize
                 ))
                 guard loadGeneration == generation, !Task.isCancelled else { return }
                 items = page.items
                 totalCount = page.totalCount
                 downloadJobs = []
             } else {
-                let states: Set<DownloadJobState>
-                switch selectedDestination {
-                case .activeDownloads:
-                    states = [
-                        .created, .resolving, .ready, .queued, .downloading,
-                        .postProcessing, .paused, .interrupted,
-                    ]
-                case .completedDownloads:
-                    states = [.completed]
-                case .failedDownloads:
-                    states = [.failed]
-                default:
-                    states = []
-                }
-                let jobs = try await downloadRepository.jobs(DownloadJobQuery(
+                let states = Self.downloadStates(for: selectedDestination)
+                let query = DownloadJobQuery(
                     states: states,
-                    limit: 500
-                ))
-                let mediaPage = try await libraryRepository.page(LibraryQuery(
                     searchText: searchText,
-                    limit: 500
-                ))
-                let visibleMediaIDs = Set(mediaPage.items.map(\.id))
-                let filteredJobs = searchText.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                ).isEmpty ? jobs : jobs.filter { visibleMediaIDs.contains($0.mediaItemID) }
+                    limit: Self.pageSize
+                )
+                async let loadedJobs = downloadRepository.jobs(query)
+                async let loadedCount = downloadRepository.jobCount(query)
+                let (jobs, count) = try await (loadedJobs, loadedCount)
+                let summaries = try await libraryRepository.summaries(
+                    mediaItemIDs: Set(jobs.map(\.mediaItemID)),
+                    workspaceID: VidindirIdentity.personalWorkspace
+                )
                 guard loadGeneration == generation, !Task.isCancelled else { return }
-                downloadJobs = filteredJobs
-                items = mediaPage.items.filter { item in
-                    filteredJobs.contains { $0.mediaItemID == item.id }
-                }
-                totalCount = filteredJobs.count
+                downloadJobs = jobs
+                items = summaries
+                totalCount = count
             }
             if let selectedMediaItemID,
                !items.contains(where: { $0.id == selectedMediaItemID }) {
@@ -268,6 +273,93 @@ final class LibraryViewModel: ObservableObject {
             isLoading = false
             alert = AppAlert(title: "Could not load this view", message: Self.userFacingMessage(for: error))
         }
+    }
+
+    func loadMore() {
+        guard canLoadMore, !isLoading, !isLoadingMore,
+              let libraryRepository, let downloadRepository else { return }
+        let generation = loadGeneration
+        let selectedDestination = destination
+        let selectedSearchText = searchText
+        isLoadingMore = true
+
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isLoadingMore = false }
+            do {
+                if let scope = selectedDestination.libraryScope {
+                    let page = try await libraryRepository.page(LibraryQuery(
+                        scope: scope,
+                        searchText: selectedSearchText,
+                        limit: Self.pageSize,
+                        offset: self.items.count
+                    ))
+                    guard self.loadGeneration == generation,
+                          self.destination == selectedDestination,
+                          self.searchText == selectedSearchText else { return }
+                    let existingIDs = Set(self.items.map(\.id))
+                    self.items.append(contentsOf: page.items.filter { !existingIDs.contains($0.id) })
+                    self.totalCount = page.totalCount
+                } else {
+                    let query = DownloadJobQuery(
+                        states: Self.downloadStates(for: selectedDestination),
+                        searchText: selectedSearchText,
+                        limit: Self.pageSize,
+                        offset: self.downloadJobs.count
+                    )
+                    let jobs = try await downloadRepository.jobs(query)
+                    let summaries = try await libraryRepository.summaries(
+                        mediaItemIDs: Set(jobs.map(\.mediaItemID)),
+                        workspaceID: VidindirIdentity.personalWorkspace
+                    )
+                    guard self.loadGeneration == generation,
+                          self.destination == selectedDestination,
+                          self.searchText == selectedSearchText else { return }
+                    self.downloadJobs.append(contentsOf: jobs)
+                    let existingIDs = Set(self.items.map(\.id))
+                    self.items.append(contentsOf: summaries.filter { !existingIDs.contains($0.id) })
+                    self.totalCount = try await downloadRepository.jobCount(query)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                self.alert = AppAlert(
+                    title: "Could not load more items",
+                    message: Self.userFacingMessage(for: error)
+                )
+            }
+        }
+    }
+
+    func allItemsInCurrentCollection() async throws -> [LibraryItemSummary] {
+        guard let libraryRepository,
+              let collection = currentCollection else {
+            throw LibraryDomainError.recordNotFound
+        }
+
+        let pageSize = 500
+        var result: [LibraryItemSummary] = []
+        var seenIDs = Set<MediaItemID>()
+        var offset = 0
+        var totalCount: Int?
+
+        repeat {
+            try Task.checkCancellation()
+            let page = try await libraryRepository.page(LibraryQuery(
+                workspaceID: collection.workspaceID,
+                scope: .collection(collection.id),
+                limit: pageSize,
+                offset: offset
+            ))
+            totalCount = page.totalCount
+            for item in page.items where seenIDs.insert(item.id).inserted {
+                result.append(item)
+            }
+            offset += page.items.count
+            if page.items.isEmpty { break }
+        } while offset < (totalCount ?? 0)
+
+        return result
     }
 
     func addLink(
@@ -379,6 +471,51 @@ final class LibraryViewModel: ObservableObject {
                 message: Self.userFacingMessage(for: error)
             )
             return nil
+        }
+    }
+
+    func deleteCollection(_ collection: Collection) {
+        guard let libraryRepository else { return }
+        Task { [weak self] in
+            do {
+                try await libraryRepository.tombstoneCollection(DeleteCollectionCommand(
+                    id: collection.id,
+                    workspaceID: collection.workspaceID,
+                    expectedRevision: collection.version.revision
+                ))
+                await self?.refreshCollections()
+                if self?.destination == .collection(collection.id) {
+                    self?.destination = .library
+                }
+                await self?.reloadNow()
+            } catch {
+                self?.alert = AppAlert(
+                    title: "Could not delete the collection",
+                    message: Self.userFacingMessage(for: error)
+                )
+            }
+        }
+    }
+
+    func clearDownloadHistory(_ scope: DownloadHistoryScope) {
+        guard let downloadRepository else { return }
+        Task { [weak self] in
+            do {
+                let result = try await downloadRepository.clearHistory(scope: scope)
+                self?.selectedDownloadJobID = nil
+                await self?.reloadNow()
+                if result.retainedReferencedCount > 0 {
+                    self?.alert = AppAlert(
+                        title: "Some history was kept",
+                        message: "\(result.retainedReferencedCount) group record(s) are still referenced by downloads that were not cleared."
+                    )
+                }
+            } catch {
+                self?.alert = AppAlert(
+                    title: "Could not clear download history",
+                    message: Self.userFacingMessage(for: error)
+                )
+            }
         }
     }
 
@@ -506,8 +643,7 @@ final class LibraryViewModel: ObservableObject {
             do {
                 let assets = try await downloadRepository.localAssets(mediaItemID: item.id)
                 guard let asset = assets.first(where: { $0.status == .available }),
-                      let url = Self.resolve(asset: asset),
-                      FileManager.default.fileExists(atPath: url.path) else {
+                      let url = LocalAssetVerifier.existingFileURL(for: asset) else {
                     if let missing = assets.first(where: { $0.status == .available }) {
                         _ = try await downloadRepository.markLocalAssetMissing(id: missing.id)
                         await self?.reloadNow()
@@ -543,15 +679,37 @@ final class LibraryViewModel: ObservableObject {
     }
 
     private func refreshNavigationCounts() async {
-        guard let libraryRepository else { return }
+        guard let libraryRepository, let downloadRepository else { return }
         do {
             async let inboxPage = libraryRepository.page(LibraryQuery(scope: .inbox, limit: 1))
             async let libraryPage = libraryRepository.page(LibraryQuery(scope: .all, limit: 1))
             async let favoritesPage = libraryRepository.page(LibraryQuery(scope: .favorites, limit: 1))
-            let (inbox, library, favorites) = try await (inboxPage, libraryPage, favoritesPage)
+            async let activeJobs = downloadRepository.jobCount(DownloadJobQuery(
+                states: Self.activeDownloadStates,
+                limit: 1
+            ))
+            async let completedJobs = downloadRepository.jobCount(DownloadJobQuery(
+                states: [.completed],
+                limit: 1
+            ))
+            async let attentionJobs = downloadRepository.jobCount(DownloadJobQuery(
+                states: Self.attentionDownloadStates,
+                limit: 1
+            ))
+            let (inbox, library, favorites, active, completed, attention) = try await (
+                inboxPage,
+                libraryPage,
+                favoritesPage,
+                activeJobs,
+                completedJobs,
+                attentionJobs
+            )
             inboxCount = inbox.totalCount
             libraryCount = library.totalCount
             favoritesCount = favorites.totalCount
+            activeDownloadCount = active
+            completedDownloadCount = completed
+            failedDownloadCount = attention
         } catch {
             // Counts are navigation hints. The authoritative view remains usable
             // if a transient count query cannot be completed.
@@ -655,29 +813,19 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
-    private static func resolve(asset: LocalAsset) -> URL? {
-        if let bookmark = asset.fileBookmark {
-            var stale = false
-            if let url = try? URL(
-                resolvingBookmarkData: bookmark,
-                options: [.withSecurityScope, .withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            ) {
-                return url
-            }
-            stale = false
-            if let url = try? URL(
-                resolvingBookmarkData: bookmark,
-                options: [.withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            ) {
-                return url
-            }
+    private static func downloadStates(
+        for destination: LibraryDestination
+    ) -> Set<DownloadJobState> {
+        switch destination {
+        case .activeDownloads:
+            activeDownloadStates
+        case .completedDownloads:
+            [.completed]
+        case .failedDownloads:
+            attentionDownloadStates
+        default:
+            []
         }
-        guard NSString(string: asset.lastKnownPath).isAbsolutePath else { return nil }
-        return URL(fileURLWithPath: asset.lastKnownPath)
     }
 
     private static func userFacingMessage(for error: Error) -> String {
@@ -695,6 +843,8 @@ final class LibraryViewModel: ObservableObject {
             return "This item changed elsewhere. Reload the library and try again."
         case LibraryDomainError.recordNotFound:
             return "This item is no longer available."
+        case LibraryDomainError.protectedCollection:
+            return "System collections cannot be deleted."
         default:
             return "Vidindir could not finish that library operation."
         }

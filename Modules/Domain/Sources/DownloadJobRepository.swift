@@ -112,18 +112,51 @@ public struct DownloadFailure: Equatable, Hashable, Sendable {
 }
 
 public struct DownloadJobQuery: Equatable, Hashable, Sendable {
+    public let workspaceID: WorkspaceID
     public let states: Set<DownloadJobState>
+    public let searchText: String?
     public let limit: Int
     public let offset: Int
 
     public init(
+        workspaceID: WorkspaceID = VidindirIdentity.personalWorkspace,
         states: Set<DownloadJobState> = [],
+        searchText: String? = nil,
         limit: Int = 100,
         offset: Int = 0
     ) {
+        self.workspaceID = workspaceID
         self.states = states
+        self.searchText = searchText
         self.limit = limit
         self.offset = offset
+    }
+}
+
+public enum DownloadHistoryScope: String, CaseIterable, Equatable, Hashable, Sendable {
+    case completed
+    case needsAttention
+    case allTerminal
+
+    public var states: Set<DownloadJobState> {
+        switch self {
+        case .completed:
+            [.completed]
+        case .needsAttention:
+            [.failed, .cancelled, .interrupted]
+        case .allTerminal:
+            [.completed, .failed, .cancelled, .interrupted]
+        }
+    }
+}
+
+public struct ClearDownloadHistoryResult: Equatable, Hashable, Sendable {
+    public let deletedCount: Int
+    public let retainedReferencedCount: Int
+
+    public init(deletedCount: Int, retainedReferencedCount: Int) {
+        self.deletedCount = deletedCount
+        self.retainedReferencedCount = retainedReferencedCount
     }
 }
 
@@ -142,6 +175,10 @@ public protocol DownloadJobRepository: Sendable {
     func completeJob(id: DownloadJobID, asset: VerifiedLocalAsset) async throws -> DownloadJob
     func interruptActiveJobsAfterLaunch() async throws -> Int
     func jobs(_ query: DownloadJobQuery) async throws -> [DownloadJob]
+    func jobCount(_ query: DownloadJobQuery) async throws -> Int
+    func job(id: DownloadJobID) async throws -> DownloadJob
+    func nextQueuedJob() async throws -> DownloadJob?
+    func clearHistory(scope: DownloadHistoryScope) async throws -> ClearDownloadHistoryResult
     func localAssets(mediaItemID: MediaItemID) async throws -> [LocalAsset]
     func markLocalAssetMissing(id: LocalAssetID) async throws -> LocalAsset
     func markLocalAssetRemoved(id: LocalAssetID) async throws -> LocalAsset

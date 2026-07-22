@@ -155,6 +155,7 @@ public actor LegacyHistoryImporter {
                     backendID: "legacy-yt-dlp",
                     engineVersion: nil,
                     state: record.state.rawValue,
+                    queuePosition: nil,
                     mediaKind: record.mediaKind.rawValue,
                     container: record.container,
                     qualityPreset: QualityPreset.best.rawValue,

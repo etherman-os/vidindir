@@ -5,9 +5,13 @@ struct LibraryBrowserView: View {
     @ObservedObject var library: LibraryViewModel
     let displayMode: LibraryDisplayMode
     let startDownload: (LibraryItemSummary) -> Void
+    let startCollectionDownload: ([LibraryItemSummary]) -> Void
     @State private var pendingDelete: LibraryItemSummary?
     @State private var pendingRename: LibraryItemSummary?
     @State private var renameText = ""
+    @State private var pendingCollectionItems: [LibraryItemSummary] = []
+    @State private var isPreparingCollectionDownload = false
+    @State private var showsCollectionDownloadConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +30,20 @@ struct LibraryBrowserView: View {
                         compactList
                     }
                 }
+            }
+            if library.canLoadMore {
+                Button {
+                    library.loadMore()
+                } label: {
+                    if library.isLoadingMore {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Load More")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(library.isLoadingMore)
+                .padding(.vertical, 10)
             }
         }
         .overlay {
@@ -68,6 +86,21 @@ struct LibraryBrowserView: View {
             .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
             Text("Use a name that will make this item easy to find later.")
+        }
+        .alert(
+            "Download Entire Collection?",
+            isPresented: $showsCollectionDownloadConfirmation
+        ) {
+            Button("Cancel", role: .cancel) {
+                pendingCollectionItems = []
+            }
+            Button("Queue \(pendingCollectionItems.count) Downloads") {
+                let items = pendingCollectionItems
+                pendingCollectionItems = []
+                startCollectionDownload(items)
+            }
+        } message: {
+            Text("Items with a verified local file will be skipped. The rest will use the current format, quality, and destination folder.")
         }
     }
 
@@ -270,6 +303,20 @@ struct LibraryBrowserView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             Spacer(minLength: 8)
+            if library.currentCollection != nil {
+                Button {
+                    prepareCollectionDownload()
+                } label: {
+                    if isPreparingCollectionDownload {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Download Collection", systemImage: "arrow.down.circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(isPreparingCollectionDownload)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
@@ -289,6 +336,33 @@ struct LibraryBrowserView: View {
             "A collection organizes links without duplicating their library records."
         default:
             "Saved media on this Mac."
+        }
+    }
+
+    private func prepareCollectionDownload() {
+        guard !isPreparingCollectionDownload else { return }
+        isPreparingCollectionDownload = true
+        Task { @MainActor in
+            defer { isPreparingCollectionDownload = false }
+            do {
+                let items = try await library.allItemsInCurrentCollection()
+                guard !items.isEmpty else {
+                    library.alert = AppAlert(
+                        title: "Collection is empty",
+                        message: "Add at least one media link before downloading this collection."
+                    )
+                    return
+                }
+                pendingCollectionItems = items
+                showsCollectionDownloadConfirmation = true
+            } catch is CancellationError {
+                return
+            } catch {
+                library.alert = AppAlert(
+                    title: "Could not prepare the collection",
+                    message: error.localizedDescription
+                )
+            }
         }
     }
 

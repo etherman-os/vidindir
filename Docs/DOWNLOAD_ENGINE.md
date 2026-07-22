@@ -120,18 +120,14 @@ Quality:   Best | 1080p | 720p | 480p | Audio best
 Container: Automatic, or a simple compatible choice such as MP4/MP3
 ```
 
-`DownloadRequestSnapshot` stores:
+The current schema-v1 `DownloadRequestSnapshot` stores:
 
-- source URL and MediaItem ID;
 - media kind;
 - quality preset/cap;
 - container preference;
-- optional subtitle/thumbnail policy when those features ship;
-- destination bookmark reference/path snapshot;
-- playlist/batch policy;
 - request schema version.
 
-It does not store raw yt-dlp flags. `YTDLPBackend` maps intent to format selectors and validates that the planned post-processing can produce the requested container. “1080p” means best available height at or below 1080 unless the advanced UI explicitly requests an exact representation. The resolved actual codecs/container are shown in details when known.
+The job separately stores its `MediaItem` identity plus destination bookmark/path snapshot. The source URL is read from that media record when execution resumes, so credentials are not copied into job JSON. Subtitle, thumbnail, and playlist policies remain future versioned fields. The snapshot never stores raw yt-dlp flags. `YTDLPBackend` maps intent to format selectors and validates that the planned post-processing can produce the requested container. “1080p” means best available height at or below 1080 unless the advanced UI explicitly requests an exact representation.
 
 Advanced settings live behind a separate UI and still map to typed, allow-listed options. Arbitrary command-line injection is never a supported customization path.
 
@@ -189,23 +185,26 @@ On launch, a reconciliation transaction converts `resolving`, `downloading`, and
 
 ## 6. DownloadCoordinator actor
 
-One `DownloadCoordinator` actor owns queue scheduling for the current device:
+One `DownloadCoordinator` actor owns queue scheduling for the current device. The implementation currently:
 
-- observes durable jobs and wakes for eligible work;
-- limits concurrent resolutions and downloads separately;
-- asks the selected backend to prepare an execution, then persists its pinned backend/engine descriptor before start;
+- persists a job and versioned request before external work begins;
+- recovers `ready` and `queued` work on launch and marks abandoned in-flight work `interrupted`;
+- executes the device-local queue in deterministic FIFO order with one active yt-dlp process;
+- resolves missing metadata before a job becomes eligible;
 - creates exactly one active execution per job/attempt;
 - serializes state transitions and terminal handling;
-- coalesces progress for UI and persistence;
-- handles pause, cancel, retry, app shutdown, and network recovery;
+- publishes every backend progress event to UI while checkpointing database progress at roughly one-second intervals;
+- handles cancel and retry; failed/interrupted jobs reuse their identity and increment attempts, while retrying a cancelled job clones it;
 - creates/updates `LocalAsset` through one completion transaction;
-- publishes immutable snapshots/events to Features.
+- verifies the output file before publishing completion;
+- skips collection items with a verified file on this device, queues every remaining item as an independent `--no-playlist` job, links the jobs as a durable batch family, and continues past per-item enqueue failures;
+- treats cancellation of any active batch member as cancellation of every still-runnable member in that family.
 
-Default V1 policy is conservative: two concurrent downloads and four concurrent metadata resolutions, adjustable in Settings. Jobs are FIFO within user priority; later explicit reordering changes a stored rank. Playlist children participate like normal jobs, preventing one playlist from bypassing limits.
+The single-process limit is intentional while `YTDLPBackend` exposes one cancellation handle. Parallel download limits, pause/resume data, explicit reordering, a synthetic aggregate job with aggregate progress, backend/engine pinning, and network-aware recovery are future milestones; Settings must not imply that they already exist.
 
 Progress can update UI at roughly 5 Hz, but database checkpoints are limited (for example, once per second) and always written at phase/terminal boundaries. Values are validated and monotonic where the backend provides a stable total; format switches may legitimately change totals, so byte counts are not used as state authority.
 
-Every attempt increments `attemptCount` before process launch and records backend/engine version. A retry uses retained safe partial data when compatible. If engine/backend/request versions are incompatible with old resume data, the coordinator asks to restart or moves incompatible partial data aside; it never presents a restarted transfer as resumed.
+Every attempt increments `attemptCount` before process launch. Resume compatibility and immutable Engine Pack version pinning must be implemented before partial-download resume is exposed.
 
 ## 7. yt-dlp adapter
 
@@ -469,34 +468,34 @@ Before starting and during large transfers, the coordinator checks available cap
 
 ## 16. Current implementation and migration
 
-The current prototype already has valuable seams:
+The current implementation has these established seams:
 
 - `DownloadBackend` and backend-neutral app events prevent `AppModel` from consuming yt-dlp event types directly.
 - `DownloadEngineManaging` separates engine readiness/preparation from downloads; `HomebrewDownloadEngineManager` is the current Developer Preview implementation.
-- `AppModel` is injected with those two application-owned contracts, while `DurableDownloadRecorder` bridges the current one-active-download execution path into persistent jobs and local assets.
+- `AppModel` is injected with those two application-owned contracts and one application-owned `DownloadCoordinator`; the coordinator is the only production writer of durable job lifecycle and local-asset completion.
 - `YTDLPCommandBuilder` uses absolute tool URLs, `--ignore-config`, typed arguments, and `--` before the source URL.
 - `YTDLPEventDecoder` consumes a sentinel plus JSON and tolerates lossy numeric fields.
-- `ByteLineFramer`, `SubprocessRunner`, and `YTDLPDownloadService` concurrently drain process output.
-- `ArtifactResolver` rejects reported artifacts outside the selected destination.
+- `ByteLineFramer`, `SubprocessRunner`, and `YTDLPDownloadService` concurrently drain bounded process output, terminate the process group on timeout/cancel, and finish exactly once.
+- `ArtifactResolver` rejects traversal, sibling-prefix, and symlink escapes outside the selected destination.
 - `DownloadPreferencesStore` remembers separate MP4/MP3 security-scoped folders and quality presets.
 - `BinaryLocator` finds bundled, Homebrew, system, and `PATH` tools.
 - `ToolInstallService` can explicitly ask Homebrew to install yt-dlp, FFmpeg, and Deno.
 - `MediaMetadataResolver` consumes bounded structured yt-dlp JSON independently from execution.
-- GRDB persists validated `DownloadJob` transitions and device-aware `LocalAsset` evidence. Relaunch converts genuinely in-flight work to `interrupted`; legacy `UserDefaults` history has an idempotent evidence-preserving importer.
-- The underlying `YTDLPDownloadService` still allows only one in-memory active execution; persistent scheduling, pause/resume, and retry execution are the next coordinator boundary.
+- GRDB persists validated `DownloadJob` transitions, FIFO positions, and device-aware `LocalAsset` evidence. Relaunch converts genuinely in-flight work to `interrupted`, resumes eligible queued work, and retains an idempotent evidence-preserving importer for legacy `UserDefaults` history.
+- The coordinator schedules one active `YTDLPDownloadService` execution, supports durable retry/cancel, and queues complete user collections as related independent jobs after verifying existing local assets. Batch cancellation reaches the active member and every queued sibling. Pause/resume and parallel scheduling remain future work.
 
 Migration sequence:
 
 1. Move the current `DownloadBackend` request/event/error seam into `DownloadCore` while adapter tests keep current behavior.
 2. Move the already existing `YTDLPBackend`, command builder, decoder, artifact adapter, and process execution into their own target; add protocol version to structured events while accepting the legacy sentinel schema during one migration window.
-3. Replace lock-based single execution with an actor-backed execution/process supervisor. Add process-group cancellation, output limits, symlink-aware containment, and exactly-once completion tests.
-4. Replace the durable single-execution bridge with `DownloadCoordinator`; add execution leasing, queue concurrency, pause/resume, retry, and persisted backoff without weakening the existing state-machine rules.
-5. Add playlist/batch expansion and restart-safe automatic reconciliation on top of the coordinator. Metadata resolution is already separate from execution.
+3. Completed for the current backend: process-group cancellation, output limits, symlink-aware containment, and exactly-once completion tests. A future protocol extraction may move the supervisor into its own target.
+4. Completed foundation: `DownloadCoordinator`, durable FIFO, retry/cancel, progress checkpoints, verified completion, and launch recovery. Execution leasing, parallel limits, pause/resume, and persisted backoff remain.
+5. Completed for saved collections: full pagination, verified-file skipping, related independent item jobs, restart-safe reconciliation, and group cancellation. Playlist detection plus a synthetic aggregate/progress job remain.
 6. Introduce `MediaProcessing` capability ownership while allowing yt-dlp to call the supplied FFmpeg path.
 7. Introduce EngineKit in shadow mode: discover/verify/report a candidate without activating it. Complete signed-pack, sandbox, notarization, and licensing decisions before self-managed activation.
 8. Retain explicit Homebrew fallback for development and migration. Remove mandatory Homebrew only after managed packs work on clean macOS 15 Intel/Apple Silicon accounts in signed/notarized builds.
 
-The current command uses `--remote-components ejs:npm`; production migration must disable it unless the signed remote-component policy ADR explicitly approves and verifies that path.
+Production commands pass `--no-remote-components`. The current Homebrew formula installs the version-matched `yt-dlp-ejs` dependency with yt-dlp; a future bundled Engine Pack must likewise include and verify it. Re-enabling network-fetched executable components requires an explicit signed-component policy ADR.
 
 ## 17. Acceptance tests
 

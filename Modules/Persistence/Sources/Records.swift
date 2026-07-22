@@ -293,6 +293,7 @@ struct DownloadJobRecord: Codable, FetchableRecord, PersistableRecord {
     let backendID: String?
     let engineVersion: String?
     let state: String
+    let queuePosition: Int64?
     let mediaKind: String
     let container: String?
     let qualityPreset: String
@@ -319,6 +320,7 @@ struct DownloadJobRecord: Codable, FetchableRecord, PersistableRecord {
 
     enum CodingKeys: String, CodingKey {
         case id, state, container
+        case queuePosition = "queue_position"
         case mediaItemID = "media_item_id"
         case deviceID = "device_id"
         case parentJobID = "parent_job_id"
@@ -365,6 +367,7 @@ struct DownloadJobRecord: Codable, FetchableRecord, PersistableRecord {
             backendID: backendID,
             engineVersion: engineVersion,
             state: DownloadJobState(rawValue: state),
+            queuePosition: queuePosition,
             mediaKind: MediaKind(rawValue: mediaKind),
             container: container,
             qualityPreset: QualityPreset(rawValue: qualityPreset),

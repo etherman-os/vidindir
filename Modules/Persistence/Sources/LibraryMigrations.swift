@@ -6,6 +6,16 @@ enum LibraryMigrations {
         migrator.registerMigration("v001_initial") { db in
             try db.execute(sql: Schema.v001)
         }
+        migrator.registerMigration("v002_download_queue_position") { db in
+            try db.execute(sql: """
+                ALTER TABLE download_jobs ADD COLUMN queue_position INTEGER;
+                UPDATE download_jobs
+                SET queue_position = rowid
+                WHERE state = 'queued' AND queue_position IS NULL;
+                CREATE INDEX download_jobs_fifo
+                    ON download_jobs(device_id, state, queue_position);
+                """)
+        }
         return migrator
     }
 }

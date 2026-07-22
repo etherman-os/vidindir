@@ -59,7 +59,16 @@ public final class LibraryDatabase: Sendable {
         try validateForeignKeys()
     }
 
-    public static func defaultURL() -> URL {
+    public static func defaultURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        if let overridePath = environment["VIDINDIR_LIBRARY_DATABASE_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !overridePath.isEmpty,
+           (overridePath as NSString).isAbsolutePath {
+            return URL(fileURLWithPath: overridePath, isDirectory: false)
+                .standardizedFileURL
+        }
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask

@@ -16,6 +16,7 @@ public final class YTDLPDownloadService: @unchecked Sendable {
 
     private let commandBuilder: YTDLPCommandBuilder
     private let artifactResolver: ArtifactResolver
+    private let processRunner: any ProcessRunning
     private let fileManager: FileManager
     private let activeLock = NSLock()
     private var activeDownload: ActiveDownload?
@@ -23,10 +24,12 @@ public final class YTDLPDownloadService: @unchecked Sendable {
     public init(
         commandBuilder: YTDLPCommandBuilder = YTDLPCommandBuilder(),
         artifactResolver: ArtifactResolver = ArtifactResolver(),
+        processRunner: any ProcessRunning = SubprocessRunner(),
         fileManager: FileManager = .default
     ) {
         self.commandBuilder = commandBuilder
         self.artifactResolver = artifactResolver
+        self.processRunner = processRunner
         self.fileManager = fileManager
     }
 
@@ -44,16 +47,6 @@ public final class YTDLPDownloadService: @unchecked Sendable {
         try request.validateForDownload()
         let invocation = try commandBuilder.build(request, tools: tools)
 
-        let process = Process()
-        process.executableURL = invocation.executableURL
-        process.arguments = invocation.arguments
-        process.currentDirectoryURL = invocation.currentDirectoryURL
-
-        let standardOutput = Pipe()
-        let standardError = Pipe()
-        process.standardOutput = standardOutput
-        process.standardError = standardError
-
         let record = DownloadRecord(
             sourceURL: request.sourceURL,
             format: request.format,
@@ -65,129 +58,99 @@ public final class YTDLPDownloadService: @unchecked Sendable {
             artifactResolver: artifactResolver,
             eventHandler: onEvent
         )
-        let active = ActiveDownload(process: process, state: state)
+        let active = ActiveDownload(state: state)
 
         guard claim(active) else {
             throw YTDLPDownloadServiceError.downloadAlreadyRunning
         }
 
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let accessedSecurityScope = request.destinationDirectory
-                    .startAccessingSecurityScopedResource()
-
-                do {
-                    try process.run()
-                } catch {
-                    release(active)
-                    if accessedSecurityScope {
-                        request.destinationDirectory.stopAccessingSecurityScopedResource()
-                    }
-                    continuation.resume(throwing: YTDLPDownloadServiceError.couldNotLaunch(
-                        error.localizedDescription
-                    ))
-                    return
-                }
-
-                state.emit(.started(record))
-                if state.wasCancelled {
-                    process.terminate()
-                }
-
-                let group = DispatchGroup()
-                let ioQueue = DispatchQueue(
-                    label: "app.vidindir.downloader.io",
-                    qos: .utility,
-                    attributes: .concurrent
-                )
-
-                group.enter()
-                ioQueue.async {
-                    Self.read(
-                        standardOutput.fileHandleForReading,
-                        stream: .standardOutput,
-                        into: state
-                    )
-                    group.leave()
-                }
-
-                group.enter()
-                ioQueue.async {
-                    Self.read(
-                        standardError.fileHandleForReading,
-                        stream: .standardError,
-                        into: state
-                    )
-                    group.leave()
-                }
-
-                group.enter()
-                ioQueue.async {
-                    process.waitUntilExit()
-                    group.leave()
-                }
-
-                group.notify(queue: state.eventQueue) { [self] in
-                    self.release(active)
-                    defer {
-                        if accessedSecurityScope {
-                            request.destinationDirectory.stopAccessingSecurityScopedResource()
-                        }
-                    }
-
-                    if state.wasCancelled {
-                        state.callEventHandler(.cancelled)
-                        continuation.resume(throwing: CancellationError())
-                        return
-                    }
-
-                    if let processingError = state.processingError {
-                        let message = processingError.localizedDescription
-                        state.callEventHandler(.failed(message))
-                        continuation.resume(throwing: processingError)
-                        return
-                    }
-
-                    guard process.terminationReason == .exit,
-                          process.terminationStatus == 0 else {
-                        let error = YTDLPDownloadServiceError.processFailed(
-                            exitCode: process.terminationStatus,
-                            message: state.failureSummary
-                        )
-                        state.callEventHandler(.failed(error.localizedDescription))
-                        continuation.resume(throwing: error)
-                        return
-                    }
-
-                    guard let finalArtifact = state.finalArtifact else {
-                        let error = YTDLPDownloadServiceError.missingFinalArtifact
-                        state.callEventHandler(.failed(error.localizedDescription))
-                        continuation.resume(throwing: error)
-                        return
-                    }
-
-                    var isDirectory: ObjCBool = false
-                    guard fileManager.fileExists(
-                        atPath: finalArtifact.path,
-                        isDirectory: &isDirectory
-                    ), !isDirectory.boolValue else {
-                        let error = YTDLPDownloadServiceError.finalArtifactNotFound(finalArtifact)
-                        state.callEventHandler(.failed(error.localizedDescription))
-                        continuation.resume(throwing: error)
-                        return
-                    }
-
-                    var completedRecord = record
-                    completedRecord.status = .completed
-                    completedRecord.outputFileURL = finalArtifact
-                    completedRecord.finishedAt = Date()
-                    state.callEventHandler(.completed(completedRecord))
-                    continuation.resume(returning: completedRecord)
-                }
+        let accessedSecurityScope = request.destinationDirectory
+            .startAccessingSecurityScopedResource()
+        defer {
+            release(active)
+            if accessedSecurityScope {
+                request.destinationDirectory.stopAccessingSecurityScopedResource()
             }
-        } onCancel: { [weak self] in
-            self?.cancel(active)
         }
+
+        state.emit(.started(record))
+        let runnerTask = Task { [processRunner] in
+            try await processRunner.run(invocation, timeout: nil) { stream, line in
+                state.consume(line, from: stream)
+            }
+        }
+        active.attach(runnerTask)
+
+        let result: SubprocessResult
+        do {
+            result = try await withTaskCancellationHandler {
+                try await runnerTask.value
+            } onCancel: {
+                active.cancel()
+            }
+        } catch is CancellationError {
+            state.finish(with: .cancelled)
+            throw CancellationError()
+        } catch {
+            let downloadError = Self.mapRunnerError(error)
+            state.finish(with: .failed(downloadError.localizedDescription))
+            throw downloadError
+        }
+
+        // Callback delivery is intentionally not a runner completion barrier.
+        // Re-read the bounded captured stdout synchronously so a very fast
+        // process cannot finish before its final artifact event is observed.
+        state.reconcile(outputLines: result.standardOutput)
+
+        if state.wasCancelled {
+            state.finish(with: .cancelled)
+            throw CancellationError()
+        }
+
+        if let processingError = state.processingError {
+            let message = DiagnosticRedactor().redact(processingError.localizedDescription)
+            state.finish(with: .failed(message))
+            throw processingError
+        }
+
+        guard result.terminationReason == .exit, result.exitCode == 0 else {
+            let error = YTDLPDownloadServiceError.processFailed(
+                exitCode: result.exitCode,
+                message: state.failureSummary(capturedStandardError: result.standardError)
+            )
+            state.finish(with: .failed(error.localizedDescription))
+            throw error
+        }
+
+        guard let finalArtifact = state.finalArtifact else {
+            let error = YTDLPDownloadServiceError.missingFinalArtifact
+            state.finish(with: .failed(error.localizedDescription))
+            throw error
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(
+            atPath: finalArtifact.path,
+            isDirectory: &isDirectory
+        ), !isDirectory.boolValue else {
+            let error = YTDLPDownloadServiceError.finalArtifactNotFound(finalArtifact)
+            state.finish(with: .failed(error.localizedDescription))
+            throw error
+        }
+
+        var completedRecord = record
+        completedRecord.status = .completed
+        completedRecord.outputFileURL = finalArtifact
+        completedRecord.finishedAt = Date()
+        state.finish(with: .completed(completedRecord))
+        return completedRecord
+    }
+
+    private static func mapRunnerError(_ error: Error) -> Error {
+        if case SubprocessRunnerError.couldNotLaunch(let message) = error {
+            return YTDLPDownloadServiceError.couldNotLaunch(message)
+        }
+        return error
     }
 
     public func cancelCurrentDownload() {
@@ -213,23 +176,7 @@ public final class YTDLPDownloadService: @unchecked Sendable {
     }
 
     private func cancel(_ active: ActiveDownload) {
-        active.state.markCancelled()
-        if active.process.isRunning {
-            active.process.terminate()
-        }
-    }
-
-    private static func read(
-        _ handle: FileHandle,
-        stream: DownloadProcessState.Stream,
-        into state: DownloadProcessState
-    ) {
-        while true {
-            let data = handle.availableData
-            if data.isEmpty { break }
-            state.consume(data, from: stream)
-        }
-        state.finish(stream: stream)
+        active.cancel()
     }
 }
 
@@ -258,27 +205,39 @@ public enum YTDLPDownloadServiceError: LocalizedError, Equatable, Sendable {
 }
 
 private final class ActiveDownload: @unchecked Sendable {
-    let process: Process
     let state: DownloadProcessState
+    private let lock = NSLock()
+    private var task: Task<SubprocessResult, Error>?
+    private var wasCancelled = false
 
-    init(process: Process, state: DownloadProcessState) {
-        self.process = process
+    init(state: DownloadProcessState) {
         self.state = state
+    }
+
+    func attach(_ task: Task<SubprocessResult, Error>) {
+        let shouldCancel = lock.withDownloadLock {
+            self.task = task
+            return wasCancelled
+        }
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        state.markCancelled()
+        let task = lock.withDownloadLock {
+            wasCancelled = true
+            return self.task
+        }
+        task?.cancel()
     }
 }
 
 private final class DownloadProcessState: @unchecked Sendable {
-    enum Stream {
-        case standardOutput
-        case standardError
-    }
-
-    let eventQueue = DispatchQueue(label: "app.vidindir.downloader.events")
+    private let eventQueue = DispatchQueue(label: "app.vidindir.downloader.events")
 
     private let lock = NSLock()
-    private var outputFramer = ByteLineFramer()
-    private var errorFramer = ByteLineFramer()
     private let decoder = YTDLPEventDecoder()
+    private let redactor = DiagnosticRedactor()
     private let destinationDirectory: URL
     private let artifactResolver: ArtifactResolver
     private let eventHandler: YTDLPDownloadService.EventHandler
@@ -286,6 +245,7 @@ private final class DownloadProcessState: @unchecked Sendable {
     private var storedFinalArtifact: URL?
     private var storedProcessingError: Error?
     private var storedWasCancelled = false
+    private var storedFinished = false
 
     init(
         destinationDirectory: URL,
@@ -297,10 +257,17 @@ private final class DownloadProcessState: @unchecked Sendable {
         self.eventHandler = eventHandler
     }
 
-    var failureSummary: String? {
-        lock.withDownloadLock {
-            let summary = recentLogs.suffix(4).joined(separator: " ")
-            return summary.isEmpty ? nil : summary
+    func failureSummary(capturedStandardError: [String]) -> String? {
+        let captured = capturedStandardError
+            .suffix(4)
+            .map { redactor.redact($0) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if !captured.isEmpty { return captured }
+
+        return lock.withDownloadLock {
+            let recent = recentLogs.suffix(4).joined(separator: " ")
+            return recent.isEmpty ? nil : recent
         }
     }
 
@@ -317,84 +284,69 @@ private final class DownloadProcessState: @unchecked Sendable {
     }
 
     func emit(_ event: DownloadServiceEvent) {
-        eventQueue.async { [eventHandler] in
-            eventHandler(event)
+        lock.withDownloadLock {
+            guard !storedFinished else { return }
+            eventQueue.async { [eventHandler] in
+                eventHandler(event)
+            }
         }
     }
 
-    func callEventHandler(_ event: DownloadServiceEvent) {
-        dispatchPrecondition(condition: .onQueue(eventQueue))
-        eventHandler(event)
+    func finish(with event: DownloadServiceEvent) {
+        let shouldFinish = lock.withDownloadLock {
+            guard !storedFinished else { return false }
+            storedFinished = true
+            return true
+        }
+        if shouldFinish {
+            eventQueue.sync { [eventHandler] in
+                eventHandler(event)
+            }
+        }
     }
 
     func markCancelled() {
         lock.withDownloadLock { storedWasCancelled = true }
     }
 
-    func consume(_ data: Data, from stream: Stream) {
-        let lines: [String]
-        do {
-            lines = try lock.withDownloadLock {
-                switch stream {
-                case .standardOutput:
-                    return try outputFramer.append(data)
-                case .standardError:
-                    return try errorFramer.append(data)
-                }
-            }
-        } catch {
-            setProcessingError(error)
-            return
-        }
+    func consume(_ line: String, from stream: SubprocessStream) {
+        process(line, from: stream, emitsEvents: true)
+    }
 
-        for line in lines {
-            process(line, from: stream)
+    func reconcile(outputLines: [String]) {
+        for line in outputLines {
+            process(line, from: .standardOutput, emitsEvents: false)
         }
     }
 
-    func finish(stream: Stream) {
-        let lines: [String]
-        do {
-            lines = try lock.withDownloadLock {
-                switch stream {
-                case .standardOutput:
-                    return try outputFramer.finish()
-                case .standardError:
-                    return try errorFramer.finish()
-                }
-            }
-        } catch {
-            setProcessingError(error)
-            return
-        }
-
-        for line in lines {
-            process(line, from: stream)
-        }
-    }
-
-    private func process(_ line: String, from stream: Stream) {
+    private func process(
+        _ line: String,
+        from stream: SubprocessStream,
+        emitsEvents: Bool
+    ) {
         if stream == .standardError {
-            appendLog(line)
-            emit(.log(line))
+            let safeLine = redactor.redact(line)
+            appendLog(safeLine)
+            if emitsEvents { emit(.log(safeLine)) }
             return
         }
 
         switch decoder.decode(line: line) {
         case .log(let message):
-            appendLog(message)
-            emit(.log(message))
+            let safeMessage = redactor.redact(message)
+            appendLog(safeMessage)
+            if emitsEvents { emit(.log(safeMessage)) }
 
         case .malformed(let payload):
-            let message = "Could not parse downloader event: \(payload)"
+            let message = redactor.redact("Could not parse downloader event: \(payload)")
             appendLog(message)
-            emit(.log(message))
+            if emitsEvents { emit(.log(message)) }
 
         case .event(.progress(let progress)):
-            emit(.progress(progress))
+            if emitsEvents { emit(.progress(progress)) }
 
         case .event(.postProcessing):
-            emit(.postProcessing)
+            if emitsEvents { emit(.postProcessing) }
 
         case .event(.plannedArtifact(let path)):
             do {
@@ -402,7 +354,7 @@ private final class DownloadProcessState: @unchecked Sendable {
                     path: path,
                     inside: destinationDirectory
                 )
-                emit(.plannedArtifact(url))
+                if emitsEvents { emit(.plannedArtifact(url)) }
             } catch {
                 setProcessingError(error)
             }
@@ -419,7 +371,9 @@ private final class DownloadProcessState: @unchecked Sendable {
             }
 
         case .event(.unknown(let name, _)):
-            emit(.log("Ignoring unknown downloader event: \(name)"))
+            if emitsEvents {
+                emit(.log(redactor.redact("Ignoring unknown downloader event: \(name)")))
+            }
         }
     }
 

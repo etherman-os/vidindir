@@ -24,8 +24,9 @@ struct YTDLPCommandBuilderTests {
         #expect(invocation.executableURL.path == "/opt/homebrew/bin/yt-dlp")
         #expect(invocation.arguments.contains("--ignore-config"))
         #expect(invocation.arguments.contains("--no-playlist"))
-        #expect(invocation.arguments.contains("--remote-components"))
-        #expect(invocation.arguments.contains("ejs:npm"))
+        #expect(invocation.arguments.contains("--no-remote-components"))
+        #expect(!invocation.arguments.contains("--remote-components"))
+        #expect(!invocation.arguments.contains("ejs:npm"))
         #expect(invocation.arguments.contains("deno:/opt/homebrew/bin/deno"))
         #expect(invocation.arguments.contains("bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"))
         #expect(value(after: "--paths", in: invocation.arguments) == destination.path)
@@ -87,6 +88,29 @@ struct YTDLPCommandBuilderTests {
         #expect(throws: YTDLPCommandBuilderError.missingTool(.ytDLP)) {
             try YTDLPCommandBuilder().build(request, tools: ToolAvailability())
         }
+    }
+
+    @Test func passesOnlyTheEnvironmentNeededByTheDownloader() throws {
+        let builder = YTDLPCommandBuilder(environment: [
+            "HOME": "/Users/test",
+            "TMPDIR": "/tmp/test",
+            "HTTPS_PROXY": "http://proxy.test",
+            "GITHUB_TOKEN": "must-not-leak",
+            "AWS_SECRET_ACCESS_KEY": "must-not-leak",
+        ])
+        let request = DownloadRequest(
+            sourceURL: try #require(URL(string: "https://example.com/video")),
+            format: .mp4,
+            destinationDirectory: URL(fileURLWithPath: "/tmp")
+        )
+
+        let environment = try #require(builder.build(request, tools: tools).environment)
+
+        #expect(environment["HOME"] == "/Users/test")
+        #expect(environment["TMPDIR"] == "/tmp/test")
+        #expect(environment["HTTPS_PROXY"] == "http://proxy.test")
+        #expect(environment["GITHUB_TOKEN"] == nil)
+        #expect(environment["AWS_SECRET_ACCESS_KEY"] == nil)
     }
 
     private func value(after option: String, in arguments: [String]) -> String? {

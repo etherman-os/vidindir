@@ -10,12 +10,16 @@ struct VidindirApp: App {
 
     init() {
         let defaults = UserDefaults.standard
-        let persistence = Self.makePersistenceComponents(defaults: defaults)
+        let downloadBackend = YTDLPBackend()
+        let persistence = Self.makePersistenceComponents(
+            defaults: defaults,
+            downloadBackend: downloadBackend
+        )
         let model = AppModel(
-            downloadBackend: YTDLPBackend(),
+            downloadBackend: downloadBackend,
             engineManager: HomebrewDownloadEngineManager(),
             defaults: defaults,
-            durableDownloads: persistence.recorder
+            downloadCoordinator: persistence.coordinator
         )
         _model = StateObject(wrappedValue: model)
         _library = StateObject(wrappedValue: persistence.library)
@@ -78,6 +82,7 @@ struct VidindirApp: App {
                 }
                 .disabled(
                     model.phase.isBusy
+                        || model.hasPendingDownloads
                         || model.isInstallingTools
                         || model.isCheckingEngineUpdates
                 )
@@ -91,8 +96,9 @@ struct VidindirApp: App {
 
     @MainActor
     private static func makePersistenceComponents(
-        defaults: UserDefaults
-    ) -> (library: LibraryViewModel, recorder: DurableDownloadRecorder?) {
+        defaults: UserDefaults,
+        downloadBackend: any DownloadBackend
+    ) -> (library: LibraryViewModel, coordinator: DownloadCoordinator?) {
         let deviceID: DeviceID
         let deviceKey = "library.currentDeviceID"
         if let value = defaults.string(forKey: deviceKey),
@@ -129,9 +135,10 @@ struct VidindirApp: App {
                     ),
                     metadataResolver: metadataResolver
                 ),
-                DurableDownloadRecorder(
+                DownloadCoordinator(
                     libraryRepository: libraryRepository,
                     downloadRepository: downloadRepository,
+                    backend: downloadBackend,
                     metadataResolver: metadataResolver
                 )
             )

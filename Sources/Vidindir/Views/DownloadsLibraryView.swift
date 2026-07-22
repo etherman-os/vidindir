@@ -4,10 +4,32 @@ import VidindirDomain
 struct DownloadsLibraryView: View {
     @ObservedObject var library: LibraryViewModel
     @ObservedObject var download: AppModel
+    @State private var pendingClearScope: DownloadHistoryScope?
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
+                if library.completedDownloadCount > 0 || library.failedDownloadCount > 0 {
+                    HStack {
+                        Spacer()
+                        Menu("Clear History", systemImage: "trash") {
+                            Button("Clear Completed…") {
+                                pendingClearScope = .completed
+                            }
+                            .disabled(library.completedDownloadCount == 0)
+                            Button("Clear Needs Attention…") {
+                                pendingClearScope = .needsAttention
+                            }
+                            .disabled(library.failedDownloadCount == 0)
+                            Divider()
+                            Button("Clear All Finished History…", role: .destructive) {
+                                pendingClearScope = .allTerminal
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                    }
+                }
+
                 if download.shouldShowToolSetup {
                     ToolSetupView(model: download)
                 }
@@ -34,7 +56,13 @@ struct DownloadsLibraryView: View {
                                 return
                             }
                             library.revealLocalFile(item)
+                        } retry: {
+                            download.retryDownload(job.id)
                         }
+                    }
+
+                    if library.canLoadMore {
+                        loadMoreButton
                     }
                 }
 
@@ -52,6 +80,22 @@ struct DownloadsLibraryView: View {
             if library.isLoading, library.downloadJobs.isEmpty {
                 ProgressView().controlSize(.small)
             }
+        }
+        .alert(
+            clearHistoryTitle,
+            isPresented: Binding(
+                get: { pendingClearScope != nil },
+                set: { if !$0 { pendingClearScope = nil } }
+            ),
+            presenting: pendingClearScope
+        ) { scope in
+            Button("Cancel", role: .cancel) {}
+            Button("Clear History", role: .destructive) {
+                library.clearDownloadHistory(scope)
+                pendingClearScope = nil
+            }
+        } message: { _ in
+            Text("Only download activity records are removed. Saved links, downloaded files, and local-file records stay intact.")
         }
     }
 
@@ -71,7 +115,7 @@ struct DownloadsLibraryView: View {
         switch library.destination {
         case .activeDownloads: "No active downloads"
         case .completedDownloads: "No completed downloads"
-        case .failedDownloads: "No failed downloads"
+        case .failedDownloads: "Nothing needs attention"
         default: "No downloads"
         }
     }
@@ -80,8 +124,33 @@ struct DownloadsLibraryView: View {
         switch library.destination {
         case .activeDownloads: "Queued and in-progress work on this Mac appears here."
         case .completedDownloads: "Downloaded files stay linked to their library items."
-        case .failedDownloads: "Downloads that need attention appear here with a clear reason."
+        case .failedDownloads: "Failed, cancelled, and interrupted downloads appear here with a clear reason."
         default: "Your device-specific download history appears here."
+        }
+    }
+
+    private var loadMoreButton: some View {
+        Button {
+            library.loadMore()
+        } label: {
+            if library.isLoadingMore {
+                ProgressView().controlSize(.small)
+            } else {
+                Text("Load More")
+            }
+        }
+        .buttonStyle(.bordered)
+        .disabled(library.isLoadingMore)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+
+    private var clearHistoryTitle: String {
+        switch pendingClearScope {
+        case .completed: "Clear Completed History?"
+        case .needsAttention: "Clear Needs Attention History?"
+        case .allTerminal: "Clear All Finished History?"
+        case nil: "Clear Download History?"
         }
     }
 }
@@ -92,6 +161,7 @@ private struct DownloadJobRow: View {
     let isSelected: Bool
     let select: () -> Void
     let reveal: () -> Void
+    let retry: () -> Void
 
     var body: some View {
         Button(action: select) {
@@ -133,12 +203,20 @@ private struct DownloadJobRow: View {
                 if job.state == .completed {
                     Button("Show in Finder", action: reveal)
                         .buttonStyle(.bordered)
-                } else if let summary = job.errorSummary {
-                    Text(summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .frame(maxWidth: 180, alignment: .trailing)
+                } else {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        if [.failed, .cancelled, .interrupted].contains(job.state) {
+                            Button("Try Again", action: retry)
+                                .buttonStyle(.bordered)
+                        }
+                        if let summary = job.errorSummary {
+                            Text(summary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .frame(maxWidth: 180, alignment: .trailing)
+                        }
+                    }
                 }
             }
             .padding(12)
@@ -161,6 +239,7 @@ private struct DownloadJobRow: View {
         switch job.state {
         case .completed: "checkmark.circle.fill"
         case .failed: "exclamationmark.triangle.fill"
+        case .cancelled: "xmark.circle"
         case .paused: "pause.circle"
         case .interrupted: "arrow.clockwise.circle"
         default: "arrow.down.circle"
@@ -171,6 +250,7 @@ private struct DownloadJobRow: View {
         switch job.state {
         case .completed: VidindirTheme.success
         case .failed: .red
+        case .cancelled: .secondary
         case .interrupted: .orange
         default: .secondary
         }

@@ -236,6 +236,133 @@ struct LibraryRepositoryTests {
         #expect(deletedAt != nil)
     }
 
+    @Test func deletingAUserCollectionTombstonesMembershipsButPreservesMedia() async throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        let item = try requireSaved(await fixture.repository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/preserved-media")!,
+            destination: .inbox
+        )))
+        let collection = try await fixture.repository.createCollection(
+            CreateCollectionCommand(name: "Obsolete Topic")
+        )
+        try await fixture.repository.setCollectionMembership(MembershipCommand(
+            workspaceID: item.workspaceID,
+            mediaItemID: item.id,
+            collectionID: collection.id,
+            isMember: true
+        ))
+        #expect(try await fixture.repository.page(
+            LibraryQuery(searchText: "obsolete")
+        ).totalCount == 1)
+
+        let endpointID = UUID().uuidString.lowercased()
+        try await fixture.database.pool.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO sync_endpoints (
+                        id, workspace_id, provider_kind, enabled, created_at, modified_at
+                    ) VALUES (?, ?, 'cloudkit', 1, ?, ?)
+                    """,
+                arguments: [
+                    endpointID,
+                    item.workspaceID.description,
+                    fixture.now.sqliteMilliseconds,
+                    fixture.now.sqliteMilliseconds,
+                ]
+            )
+        }
+        let journalBefore = try await fixture.database.pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM change_journal") ?? 0
+        }
+
+        try await fixture.repository.tombstoneCollection(DeleteCollectionCommand(
+            id: collection.id,
+            workspaceID: collection.workspaceID,
+            expectedRevision: collection.version.revision
+        ))
+
+        #expect(try await fixture.repository.collections(
+            workspaceID: item.workspaceID
+        ).contains { $0.id == collection.id } == false)
+        #expect(try await fixture.repository.page(LibraryQuery(scope: .all)).items.map(\.id) == [item.id])
+        #expect(try await fixture.repository.page(LibraryQuery(scope: .inbox)).items.map(\.id) == [item.id])
+        #expect(try await fixture.repository.page(
+            LibraryQuery(scope: .collection(collection.id))
+        ).totalCount == 0)
+        #expect(try await fixture.repository.page(
+            LibraryQuery(searchText: "obsolete")
+        ).totalCount == 0)
+
+        let evidence = try await fixture.database.pool.read { db -> (Int64?, Int64?, Int64?, Int64?, Int, Int) in
+            let collectionRow = try Row.fetchOne(
+                db,
+                sql: "SELECT revision, deleted_at FROM collections WHERE id = ?",
+                arguments: [collection.id.description]
+            )
+            let membershipRow = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT revision, deleted_at FROM collection_memberships
+                    WHERE collection_id = ? AND media_item_id = ?
+                    """,
+                arguments: [collection.id.description, item.id.description]
+            )
+            let journalAfter = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM change_journal"
+            ) ?? 0
+            let pendingOutbox = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM sync_outbox WHERE endpoint_id = ? AND state = 'pending'",
+                arguments: [endpointID]
+            ) ?? 0
+            return (
+                collectionRow?["revision"],
+                collectionRow?["deleted_at"],
+                membershipRow?["revision"],
+                membershipRow?["deleted_at"],
+                journalAfter,
+                pendingOutbox
+            )
+        }
+        #expect(evidence.0 == 2)
+        #expect(evidence.1 != nil)
+        #expect(evidence.2 == 2)
+        #expect(evidence.3 != nil)
+        #expect(evidence.4 - journalBefore == 2)
+        #expect(evidence.5 == 2)
+    }
+
+    @Test func deletingCollectionsProtectsInboxAndHonorsOptimisticRevision() async throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        let inbox = try #require(try await fixture.repository.collections(
+            workspaceID: VidindirIdentity.personalWorkspace
+        ).first { $0.kind == .systemInbox })
+        await #expect(throws: LibraryDomainError.protectedCollection) {
+            try await fixture.repository.tombstoneCollection(DeleteCollectionCommand(
+                id: inbox.id,
+                workspaceID: inbox.workspaceID,
+                expectedRevision: inbox.version.revision
+            ))
+        }
+
+        let collection = try await fixture.repository.createCollection(
+            CreateCollectionCommand(name: "Keep Revision")
+        )
+        await #expect(throws: LibraryDomainError.concurrentModification) {
+            try await fixture.repository.tombstoneCollection(DeleteCollectionCommand(
+                id: collection.id,
+                workspaceID: collection.workspaceID,
+                expectedRevision: collection.version.revision + 1
+            ))
+        }
+        #expect(try await fixture.repository.collections(
+            workspaceID: collection.workspaceID
+        ).contains { $0.id == collection.id })
+    }
+
     @Test func localChangesEnterEveryEnabledEndpointOutboxInTheSameTransaction() async throws {
         let fixture = try PersistenceFixture()
         defer { fixture.remove() }

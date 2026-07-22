@@ -45,11 +45,11 @@ struct YTDLPMetadataResolver: MediaMetadataResolving, Sendable {
             "--no-playlist",
             "--skip-download",
             "--no-warnings",
+            "--no-remote-components",
         ]
         if let deno = tools.deno {
             arguments += [
                 "--js-runtimes", "deno:\(deno.path)",
-                "--remote-components", "ejs:npm",
             ]
         }
         arguments += [

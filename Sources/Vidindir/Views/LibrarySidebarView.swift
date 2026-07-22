@@ -5,6 +5,7 @@ struct LibrarySidebarView: View {
     @ObservedObject var library: LibraryViewModel
     @State private var isCreatingCollection = false
     @State private var newCollectionName = ""
+    @State private var pendingDeleteCollection: Collection?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +43,10 @@ struct LibrarySidebarView: View {
                             .contextMenu {
                                 Button("Open") {
                                     library.destination = .collection(collection.id)
+                                }
+                                Divider()
+                                Button("Delete Collection…", role: .destructive) {
+                                    pendingDeleteCollection = collection
                                 }
                             }
                             .tag(LibraryDestination.collection(collection.id))
@@ -100,6 +105,22 @@ struct LibrarySidebarView: View {
         } message: {
             Text("Collections keep related media together without moving or duplicating the original item.")
         }
+        .alert(
+            "Delete Collection?",
+            isPresented: Binding(
+                get: { pendingDeleteCollection != nil },
+                set: { if !$0 { pendingDeleteCollection = nil } }
+            ),
+            presenting: pendingDeleteCollection
+        ) { collection in
+            Button("Cancel", role: .cancel) {}
+            Button("Delete Collection", role: .destructive) {
+                library.deleteCollection(collection)
+                pendingDeleteCollection = nil
+            }
+        } message: { collection in
+            Text("“\(collection.name)” will be removed. Its media stays in All Media, and downloaded files stay on this Mac.")
+        }
     }
 
     private var userCollections: [Collection] {
@@ -128,6 +149,9 @@ struct LibrarySidebarView: View {
         case .inbox: library.inboxCount
         case .library: library.libraryCount
         case .favorites: library.favoritesCount
+        case .activeDownloads: library.activeDownloadCount
+        case .completedDownloads: library.completedDownloadCount
+        case .failedDownloads: library.failedDownloadCount
         default: 0
         }
     }

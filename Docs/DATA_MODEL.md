@@ -3,7 +3,7 @@
 Status: foundation specification
 Storage: SQLite through GRDB
 Target schema name: `library`
-Initial schema version: `1`
+Current schema version: `2`
 
 This document defines the logical and physical data model for the local-first Vidindir library. SQLite is the source of truth. A sync provider receives an explicit subset of records; it never becomes the database.
 
@@ -357,6 +357,7 @@ CREATE TABLE download_jobs (
     backend_id               TEXT,
     engine_version           TEXT,
     state                    TEXT NOT NULL,
+    queue_position           INTEGER,
     media_kind               TEXT NOT NULL,  -- video | audio
     container                TEXT,           -- mp4 | mp3 | source | ...
     quality_preset           TEXT NOT NULL,  -- best | p1080 | p720 | ...
@@ -383,13 +384,17 @@ CREATE TABLE download_jobs (
 );
 CREATE INDEX download_jobs_queue
     ON download_jobs(device_id, state, queued_at, created_at);
+CREATE INDEX download_jobs_fifo
+    ON download_jobs(device_id, state, queue_position);
 CREATE INDEX download_jobs_media
     ON download_jobs(media_item_id, created_at DESC);
 ```
 
 `request_json` is a versioned backend-neutral snapshot so changing user defaults does not change a queued job. It may contain subtitle/playlist options added in later versions, but never cookies or credentials. `technical_detail` is sanitized and bounded. A completed job references a verified `LocalAsset`; the asset owns the final file capability.
 
-Parent jobs group playlist/batch expansion. A parent is an aggregate and does not launch a process. Child creation is idempotent on `(parent job, source identity)` in coordinator policy, not with a rigid V1 SQL constraint.
+`queue_position` was added by `v002_download_queue_position`. Existing queued rows are backfilled in row order; every later transition into `queued` receives the next device-local position. The coordinator orders by position, then creation time and ID for deterministic recovery.
+
+`parent_job_id` groups executable jobs without inventing a fake media item. For a collection batch, the first successfully queued job is the root and every later job points to it; every member still owns its own media, request, progress, and terminal state. The relationship survives relaunch and lets cancellation find every still-runnable sibling. The repository therefore permits a parent and child to reference different media in the same workspace and device. A synthetic aggregate/progress job remains a separate product/schema milestone.
 
 State values and transitions are defined in `DOWNLOAD_ENGINE.md`. Progress constraints are validated before persistence: fraction in `0...1`, counts non-negative, and floating-point values finite.
 
@@ -581,7 +586,7 @@ If migration fails, do not create a fresh empty database over the original. Clos
 
 ## 12. Current prototype migration
 
-The prototype stores at most 30 `DownloadRecord` values as JSON under `UserDefaults` key `history.downloads`. It stores selected format and per-format destination bookmarks under `preferences.*`. It has no workspace, media library, GRDB schema, sync journal, durable queue, device record, or engine activation table.
+The legacy prototype stored at most 30 `DownloadRecord` values as JSON under `UserDefaults` key `history.downloads`. It stored selected format and per-format destination bookmarks under `preferences.*`; it had no workspace, media library, GRDB schema, sync journal, durable queue, device record, or engine activation table.
 
 The first production migration performs a one-time import:
 

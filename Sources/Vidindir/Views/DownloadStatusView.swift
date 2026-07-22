@@ -36,7 +36,7 @@ struct DownloadStatusView: View {
                     .textSelection(.enabled)
 
                 HStack {
-                    Button("Try Again", action: model.startDownload)
+                    Button("Try Again") { model.startDownload() }
                         .buttonStyle(.borderedProminent)
                         .tint(VidindirTheme.accent)
                     Button("New Download", action: model.resetForNewDownload)

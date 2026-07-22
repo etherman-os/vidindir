@@ -308,7 +308,6 @@ struct AppModelEngineUpdateSchedulerTests {
                 defaults: defaults,
                 fallbackDirectory: FileManager.default.temporaryDirectory
             ),
-            historyStore: DownloadHistoryStore(defaults: defaults),
             defaults: defaults,
             engineUpdateSchedule: EngineUpdateSchedule(
                 interval: .seconds(3_600),

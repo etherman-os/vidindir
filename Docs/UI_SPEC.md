@@ -210,6 +210,7 @@ Inbox, Library, Favorites, and Collections share the same media browser componen
 - Filter by source and local status in V1; richer tag and smart filters later.
 - Context menus for Download on This Mac, Reveal in Finder, Open Source, Copy URL, Favorite, collection membership, Remove Local File, and Delete from Library.
 - Dragging selected items onto a collection to add membership.
+- A user collection exposes “Download Collection”. The app loads the complete collection rather than only the visible/search-filtered page, confirms the item count, skips items whose local asset still resolves to a regular file, then creates one FIFO `--no-playlist` job per remaining media item using the current format, quality, and destination. The first queued job anchors the durable batch relationship; cancelling an active batch job also cancels its queued siblings.
 
 Search updates promptly without moving keyboard focus unexpectedly. “No results” is distinct from an empty library.
 

@@ -241,6 +241,167 @@ struct DownloadJobRepositoryTests {
         #expect(queued.map(\.id) == [jobs[3].id])
     }
 
+    @Test func countsSearchAndPaginatesDeviceJobsWithoutDroppingTerminalStates() async throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        let needle = try await fixture.makeMediaItem(
+            source: "https://example.com/needle-download"
+        )
+        let other = try await fixture.makeMediaItem(
+            source: "https://example.com/other-download"
+        )
+        let active = try await fixture.makeDownloadJob(mediaItemID: needle.id)
+        let cancelled = try await fixture.makeDownloadJob(mediaItemID: other.id)
+        _ = try await fixture.downloadRepository.transitionJob(
+            id: cancelled.id,
+            from: .created,
+            to: .cancelled
+        )
+
+        #expect(try await fixture.downloadRepository.jobCount(DownloadJobQuery(
+            states: [.created]
+        )) == 1)
+        #expect(try await fixture.downloadRepository.jobCount(DownloadJobQuery(
+            states: [.failed, .cancelled, .interrupted]
+        )) == 1)
+        #expect(try await fixture.downloadRepository.jobCount(DownloadJobQuery(
+            searchText: "needle"
+        )) == 1)
+
+        let firstPage = try await fixture.downloadRepository.jobs(DownloadJobQuery(limit: 1))
+        let secondPage = try await fixture.downloadRepository.jobs(DownloadJobQuery(
+            limit: 1,
+            offset: 1
+        ))
+        #expect(firstPage.count == 1)
+        #expect(secondPage.count == 1)
+        #expect(Set((firstPage + secondPage).map(\.id)) == [active.id, cancelled.id])
+    }
+
+    @Test func clearingHistoryPreservesActiveJobsMediaAssetsAndDownloadedFiles() async throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        let item = try await fixture.makeMediaItem()
+        let fileURL = fixture.rootURL.appendingPathComponent("preserved.mp4")
+        try Data("downloaded-media".utf8).write(to: fileURL)
+
+        var completed = try await fixture.makeDownloadJob(mediaItemID: item.id)
+        completed = try await fixture.downloadRepository.transitionJob(
+            id: completed.id, from: .created, to: .resolving
+        )
+        completed = try await fixture.downloadRepository.transitionJob(
+            id: completed.id, from: .resolving, to: .ready
+        )
+        completed = try await fixture.downloadRepository.transitionJob(
+            id: completed.id, from: .ready, to: .queued
+        )
+        completed = try await fixture.downloadRepository.transitionJob(
+            id: completed.id, from: .queued, to: .downloading
+        )
+        completed = try await fixture.downloadRepository.transitionJob(
+            id: completed.id, from: .downloading, to: .postProcessing
+        )
+        completed = try await fixture.downloadRepository.completeJob(
+            id: completed.id,
+            asset: try VerifiedLocalAsset(
+                fileBookmark: Data("bookmark".utf8),
+                absolutePath: fileURL.path,
+                fileSizeBytes: Int64(Data("downloaded-media".utf8).count),
+                container: "mp4",
+                verifiedAt: fixture.now
+            )
+        )
+
+        var failed = try await fixture.makeDownloadJob(mediaItemID: item.id)
+        failed = try await fixture.downloadRepository.transitionJob(
+            id: failed.id, from: .created, to: .resolving
+        )
+        failed = try await fixture.downloadRepository.failJob(
+            id: failed.id,
+            failure: DownloadFailure(category: "network", summary: "Offline")
+        )
+        var cancelled = try await fixture.makeDownloadJob(mediaItemID: item.id)
+        cancelled = try await fixture.downloadRepository.transitionJob(
+            id: cancelled.id, from: .created, to: .cancelled
+        )
+        let active = try await fixture.makeDownloadJob(mediaItemID: item.id)
+
+        let attentionResult = try await fixture.downloadRepository.clearHistory(
+            scope: .needsAttention
+        )
+        #expect(attentionResult == ClearDownloadHistoryResult(
+            deletedCount: 2,
+            retainedReferencedCount: 0
+        ))
+        #expect(try await fixture.downloadRepository.jobs(DownloadJobQuery()).map(\.id).contains(active.id))
+        #expect(try await fixture.downloadRepository.jobs(DownloadJobQuery()).map(\.id).contains(completed.id))
+        #expect(try await fixture.downloadRepository.jobs(DownloadJobQuery()).map(\.id).contains(failed.id) == false)
+        #expect(try await fixture.downloadRepository.jobs(DownloadJobQuery()).map(\.id).contains(cancelled.id) == false)
+
+        // A new repository instance exercises the same persisted database as a
+        // relaunch, rather than relying on actor-local state.
+        let relaunchedRepository = GRDBDownloadJobRepository(database: fixture.database)
+        let completedResult = try await relaunchedRepository.clearHistory(scope: .completed)
+        #expect(completedResult.deletedCount == 1)
+        #expect(try await relaunchedRepository.jobs(DownloadJobQuery()).map(\.id) == [active.id])
+        #expect(try await relaunchedRepository.localAssets(mediaItemID: item.id).count == 1)
+        #expect(try await fixture.repository.page(LibraryQuery()).items.map(\.id) == [item.id])
+        #expect(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
+    @Test func clearingTerminalParentAndChildJobsUsesDependencyOrder() async throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        let item = try await fixture.makeMediaItem()
+        var parent = try await fixture.makeDownloadJob(mediaItemID: item.id)
+        let child = try await fixture.downloadRepository.createJob(CreateDownloadJobCommand(
+            mediaItemID: item.id,
+            parentJobID: parent.id,
+            mediaKind: .video,
+            container: "mp4",
+            requestJSON: #"{"format":"video"}"#,
+            destinationBookmark: nil,
+            destinationPath: "/tmp"
+        ))
+        parent = try await fixture.downloadRepository.transitionJob(
+            id: parent.id, from: .created, to: .cancelled
+        )
+        _ = try await fixture.downloadRepository.transitionJob(
+            id: child.id, from: .created, to: .cancelled
+        )
+
+        let result = try await fixture.downloadRepository.clearHistory(scope: .allTerminal)
+        #expect(result.deletedCount == 2)
+        #expect(result.retainedReferencedCount == 0)
+        #expect(try await fixture.downloadRepository.jobCount(DownloadJobQuery()) == 0)
+        #expect(parent.state == .cancelled)
+    }
+
+    @Test func parentAndChildJobsMayRepresentDifferentMediaInTheSameWorkspace() async throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        let parentMedia = try await fixture.makeMediaItem(
+            source: "https://example.com/batch-parent"
+        )
+        let childMedia = try await fixture.makeMediaItem(
+            source: "https://example.com/batch-child"
+        )
+        let parent = try await fixture.makeDownloadJob(mediaItemID: parentMedia.id)
+
+        let child = try await fixture.downloadRepository.createJob(CreateDownloadJobCommand(
+            mediaItemID: childMedia.id,
+            parentJobID: parent.id,
+            mediaKind: .video,
+            container: "mp4",
+            requestJSON: #"{"format":"video"}"#,
+            destinationBookmark: nil,
+            destinationPath: "/tmp"
+        ))
+
+        #expect(child.parentJobID == parent.id)
+        #expect(child.mediaItemID == childMedia.id)
+    }
+
     @Test func databaseRejectsCompletedRowsWithoutMatchingAvailableAsset() async throws {
         let fixture = try PersistenceFixture()
         defer { fixture.remove() }
