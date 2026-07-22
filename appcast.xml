@@ -1,11 +1,22 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- sparkle-sign-warning:
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
---><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+-->
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Vidindir Updates</title>
         <link>https://github.com/etherman-os/vidindir</link>
         <description>Verified Vidindir application updates.</description>
         <language>en</language>
+        <item>
+            <title>0.0.2</title>
+            <pubDate>Wed, 22 Jul 2026 16:38:51 +0000</pubDate>
+            <link>https://github.com/etherman-os/vidindir</link>
+            <sparkle:version>5</sparkle:version>
+            <sparkle:shortVersionString>0.0.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/etherman-os/vidindir/releases/download/v0.0.2/Vidindir-0.0.2-macOS-universal2.zip" length="8209308" type="application/octet-stream" sparkle:edSignature="catOZyr6cwPWmZPo+7zGbi7HnFJiHFraVfr4yhdRAfMdfFmdF4HiUhklmxeuI1hntnA7AmG6ipB/Ob0iIKAeBA=="/>
+        </item>
         <item>
             <title>0.0.1</title>
             <pubDate>Sat, 18 Jul 2026 17:28:47 +0000</pubDate>
@@ -13,10 +24,11 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:version>3</sparkle:version>
             <sparkle:shortVersionString>0.0.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/etherman-os/vidindir/releases/download/v0.0.1/Vidindir-0.0.1-macOS-universal2.zip" length="7938793" type="application/octet-stream" sparkle:edSignature="wiQHWburMkuLBIGEzzYmA8udFKdjbFTGYZJ2zqKukVItAF2zTQ1ZAO0JftpFWdQk98C1p69P4Yij6yLn2OLKAg=="></enclosure>
+            <enclosure url="https://github.com/etherman-os/vidindir/releases/download/v0.0.1/Vidindir-0.0.1-macOS-universal2.zip" length="7938793" type="application/octet-stream" sparkle:edSignature="wiQHWburMkuLBIGEzzYmA8udFKdjbFTGYZJ2zqKukVItAF2zTQ1ZAO0JftpFWdQk98C1p69P4Yij6yLn2OLKAg=="/>
         </item>
     </channel>
-</rss><!-- sparkle-signatures:
-edSignature: Z25PoZDb96HG7/9fuV+ZLkarJjnYIO0H7jU3kMordHqxrAMA++A9qYONy8SsbpgXdsCBJcJ3agUZLSJtbvqECw==
-length: 1318
+</rss>
+<!-- sparkle-signatures:
+edSignature: oNL7VLur1ZctU6Bxjo5xrjarJpEzRdFDu8uF0GTc/cNP/4JssHXIew+mSgHp5L/uDRRxwpw9osiMbLC8bA2MBw==
+length: 1996
 -->
