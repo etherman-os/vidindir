@@ -46,7 +46,10 @@ struct SubprocessRunnerTests {
             Issue.record("Unexpected timeout error: \(error)")
         }
 
-        #expect(Date().timeIntervalSince(startedAt) < 1)
+        // A loaded Intel CI runner can delay task resumption even after the
+        // process group has already been killed. Keep this a boundedness check,
+        // not a scheduler-latency benchmark.
+        #expect(Date().timeIntervalSince(startedAt) < 3)
     }
 
     @Test func timeoutDoesNotWaitForABlockingLineCallback() async {
