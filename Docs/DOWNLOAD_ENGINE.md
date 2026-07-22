@@ -197,9 +197,10 @@ One `DownloadCoordinator` actor owns queue scheduling for the current device. Th
 - handles cancel and retry; failed/interrupted jobs reuse their identity and increment attempts, while retrying a cancelled job clones it;
 - creates/updates `LocalAsset` through one completion transaction;
 - verifies the output file before publishing completion;
-- queues every item in a user collection as an independent `--no-playlist` job and continues past per-item enqueue failures.
+- skips collection items with a verified file on this device, queues every remaining item as an independent `--no-playlist` job, links the jobs as a durable batch family, and continues past per-item enqueue failures;
+- treats cancellation of any active batch member as cancellation of every still-runnable member in that family.
 
-The single-process limit is intentional while `YTDLPBackend` exposes one cancellation handle. Parallel download limits, pause/resume data, explicit reordering, parent aggregate controls, backend/engine pinning, and network-aware recovery are future milestones; Settings must not imply that they already exist.
+The single-process limit is intentional while `YTDLPBackend` exposes one cancellation handle. Parallel download limits, pause/resume data, explicit reordering, a synthetic aggregate job with aggregate progress, backend/engine pinning, and network-aware recovery are future milestones; Settings must not imply that they already exist.
 
 Progress can update UI at roughly 5 Hz, but database checkpoints are limited (for example, once per second) and always written at phase/terminal boundaries. Values are validated and monotonic where the backend provides a stable total; format switches may legitimately change totals, so byte counts are not used as state authority.
 
@@ -481,7 +482,7 @@ The current implementation has these established seams:
 - `ToolInstallService` can explicitly ask Homebrew to install yt-dlp, FFmpeg, and Deno.
 - `MediaMetadataResolver` consumes bounded structured yt-dlp JSON independently from execution.
 - GRDB persists validated `DownloadJob` transitions, FIFO positions, and device-aware `LocalAsset` evidence. Relaunch converts genuinely in-flight work to `interrupted`, resumes eligible queued work, and retains an idempotent evidence-preserving importer for legacy `UserDefaults` history.
-- The coordinator schedules one active `YTDLPDownloadService` execution, supports durable retry/cancel, and queues complete user collections as independent jobs. Pause/resume and parallel scheduling remain future work.
+- The coordinator schedules one active `YTDLPDownloadService` execution, supports durable retry/cancel, and queues complete user collections as related independent jobs after verifying existing local assets. Batch cancellation reaches the active member and every queued sibling. Pause/resume and parallel scheduling remain future work.
 
 Migration sequence:
 
@@ -489,7 +490,7 @@ Migration sequence:
 2. Move the already existing `YTDLPBackend`, command builder, decoder, artifact adapter, and process execution into their own target; add protocol version to structured events while accepting the legacy sentinel schema during one migration window.
 3. Completed for the current backend: process-group cancellation, output limits, symlink-aware containment, and exactly-once completion tests. A future protocol extraction may move the supervisor into its own target.
 4. Completed foundation: `DownloadCoordinator`, durable FIFO, retry/cancel, progress checkpoints, verified completion, and launch recovery. Execution leasing, parallel limits, pause/resume, and persisted backoff remain.
-5. Completed for saved collections: full pagination and independent item jobs with restart-safe reconciliation. Playlist detection plus aggregate parent controls remain.
+5. Completed for saved collections: full pagination, verified-file skipping, related independent item jobs, restart-safe reconciliation, and group cancellation. Playlist detection plus a synthetic aggregate/progress job remain.
 6. Introduce `MediaProcessing` capability ownership while allowing yt-dlp to call the supplied FFmpeg path.
 7. Introduce EngineKit in shadow mode: discover/verify/report a candidate without activating it. Complete signed-pack, sandbox, notarization, and licensing decisions before self-managed activation.
 8. Retain explicit Homebrew fallback for development and migration. Remove mandatory Homebrew only after managed packs work on clean macOS 15 Intel/Apple Silicon accounts in signed/notarized builds.

@@ -24,6 +24,7 @@ struct DownloadBatchEnqueueFailure: Sendable {
 
 struct DownloadBatchEnqueueResult: Sendable {
     let queuedJobIDs: [DownloadJobID]
+    let skippedMediaItemIDs: [MediaItemID]
     let failures: [DownloadBatchEnqueueFailure]
 }
 
@@ -41,6 +42,7 @@ actor DownloadCoordinator {
     private var activeJob: DownloadJob?
     private var lastProgressPersistenceAt: Date?
     private var queueGeneration: UInt64 = 0
+    private var cancelledBatchRoots = Set<DownloadJobID>()
     private var didStart = false
 
     init(
@@ -158,15 +160,32 @@ actor DownloadCoordinator {
 
     func enqueueBatch(_ entries: [DownloadBatchEntry]) async -> DownloadBatchEnqueueResult {
         var queuedJobIDs: [DownloadJobID] = []
+        var skippedMediaItemIDs: [MediaItemID] = []
         var failures: [DownloadBatchEnqueueFailure] = []
         var seenMediaItemIDs = Set<MediaItemID>()
+        var rootJobID: DownloadJobID?
 
         for entry in entries where seenMediaItemIDs.insert(entry.mediaItemID).inserted {
             do {
-                queuedJobIDs.append(try await enqueue(
+                if let rootJobID {
+                    if cancelledBatchRoots.contains(rootJobID) {
+                        break
+                    }
+                    if try await downloadRepository.job(id: rootJobID).state == .cancelled {
+                        break
+                    }
+                }
+                if try await hasVerifiedLocalAsset(mediaItemID: entry.mediaItemID) {
+                    skippedMediaItemIDs.append(entry.mediaItemID)
+                    continue
+                }
+                let jobID = try await enqueue(
                     entry.request,
-                    mediaItemID: entry.mediaItemID
-                ))
+                    mediaItemID: entry.mediaItemID,
+                    parentJobID: rootJobID
+                )
+                rootJobID = rootJobID ?? jobID
+                queuedJobIDs.append(jobID)
             } catch {
                 failures.append(DownloadBatchEnqueueFailure(
                     mediaItemID: entry.mediaItemID,
@@ -174,8 +193,12 @@ actor DownloadCoordinator {
                 ))
             }
         }
+        if let rootJobID {
+            cancelledBatchRoots.remove(rootJobID)
+        }
         return DownloadBatchEnqueueResult(
             queuedJobIDs: queuedJobIDs,
+            skippedMediaItemIDs: skippedMediaItemIDs,
             failures: failures
         )
     }
@@ -218,19 +241,28 @@ actor DownloadCoordinator {
     }
 
     func cancel(_ id: DownloadJobID) async {
-        if activeJob?.id == id {
-            backend.cancelCurrentDownload()
-            executionTask?.cancel()
-            return
+        guard let requestedJob = try? await downloadRepository.job(id: id) else { return }
+        let rootJobID = requestedJob.parentJobID ?? requestedJob.id
+        cancelledBatchRoots.insert(rootJobID)
+        let family = (try? await cancellableJobs(rootJobID: rootJobID)) ?? [requestedJob]
+        var cancelsActiveJob = false
+
+        for job in family {
+            if activeJob?.id == job.id {
+                cancelsActiveJob = true
+                continue
+            }
+            guard Self.cancellableStates.contains(job.state),
+                  let cancelled = try? await transition(job, to: .cancelled) else {
+                continue
+            }
+            publish(.cancelled(cancelled.id))
         }
 
-        guard let job = try? await downloadRepository.job(id: id),
-              [.created, .resolving, .ready, .queued, .paused, .failed, .interrupted]
-                .contains(job.state),
-              let cancelled = try? await transition(job, to: .cancelled) else {
-            return
+        if cancelsActiveJob {
+            backend.cancelCurrentDownload()
+            executionTask?.cancel()
         }
-        publish(.cancelled(cancelled.id))
     }
 
     func shutdown() {
@@ -444,6 +476,37 @@ actor DownloadCoordinator {
         }
     }
 
+    private func hasVerifiedLocalAsset(mediaItemID: MediaItemID) async throws -> Bool {
+        let assets = try await downloadRepository.localAssets(mediaItemID: mediaItemID)
+        var foundExistingFile = false
+        for asset in assets where asset.status == .available {
+            if LocalAssetVerifier.existingFileURL(for: asset) != nil {
+                foundExistingFile = true
+            } else {
+                _ = try await downloadRepository.markLocalAssetMissing(id: asset.id)
+            }
+        }
+        return foundExistingFile
+    }
+
+    private func cancellableJobs(rootJobID: DownloadJobID) async throws -> [DownloadJob] {
+        var candidates: [DownloadJob] = []
+        var offset = 0
+        while true {
+            let page = try await downloadRepository.jobs(DownloadJobQuery(
+                states: Self.cancellableStates,
+                limit: 500,
+                offset: offset
+            ))
+            candidates += page.filter {
+                $0.id == rootJobID || $0.parentJobID == rootJobID
+            }
+            guard page.count == 500 else { break }
+            offset += page.count
+        }
+        return candidates
+    }
+
     private func transition(
         _ job: DownloadJob,
         to state: DownloadJobState
@@ -489,6 +552,11 @@ actor DownloadCoordinator {
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? "The download could not be completed." : value
     }
+
+    private static let cancellableStates: Set<DownloadJobState> = [
+        .created, .resolving, .ready, .queued, .downloading, .postProcessing,
+        .paused, .failed, .interrupted,
+    ]
 }
 
 enum DownloadCoordinatorError: LocalizedError, Equatable {

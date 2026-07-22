@@ -376,15 +376,23 @@ final class AppModel: ObservableObject {
         enqueueTask = Task { [weak self, downloadCoordinator] in
             let result = await downloadCoordinator.enqueueBatch(entries)
             guard let self else { return }
-            if !result.failures.isEmpty {
-                let queuedCount = result.queuedJobIDs.count
-                let failedCount = result.failures.count
-                let firstFailure = result.failures[0].summary
+            let queuedCount = result.queuedJobIDs.count
+            let skippedCount = result.skippedMediaItemIDs.count
+            let failedCount = result.failures.count
+            if skippedCount > 0 || failedCount > 0 {
+                var details = ["Queued \(queuedCount)", "already downloaded \(skippedCount)"]
+                if failedCount > 0 {
+                    details.append("could not queue \(failedCount)")
+                }
+                var message = details.joined(separator: "; ") + "."
+                if let firstFailure = result.failures.first?.summary {
+                    message += " \(firstFailure)"
+                }
                 self.alert = AppAlert(
                     title: queuedCount == 0
-                        ? "Collection could not be queued"
-                        : "Some downloads could not be queued",
-                    message: "Queued \(queuedCount); skipped \(failedCount). \(firstFailure)"
+                        ? "No new downloads queued"
+                        : "Collection queued",
+                    message: message
                 )
             }
             self.isEnqueuingDownload = false

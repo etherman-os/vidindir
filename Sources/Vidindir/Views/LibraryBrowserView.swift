@@ -100,7 +100,7 @@ struct LibraryBrowserView: View {
                 startCollectionDownload(items)
             }
         } message: {
-            Text("Each item will be queued as a separate download using the current format, quality, and destination folder.")
+            Text("Items with a verified local file will be skipped. The rest will use the current format, quality, and destination folder.")
         }
     }
 

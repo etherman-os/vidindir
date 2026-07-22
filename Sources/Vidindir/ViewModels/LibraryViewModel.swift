@@ -643,8 +643,7 @@ final class LibraryViewModel: ObservableObject {
             do {
                 let assets = try await downloadRepository.localAssets(mediaItemID: item.id)
                 guard let asset = assets.first(where: { $0.status == .available }),
-                      let url = Self.resolve(asset: asset),
-                      FileManager.default.fileExists(atPath: url.path) else {
+                      let url = LocalAssetVerifier.existingFileURL(for: asset) else {
                     if let missing = assets.first(where: { $0.status == .available }) {
                         _ = try await downloadRepository.markLocalAssetMissing(id: missing.id)
                         await self?.reloadNow()
@@ -827,31 +826,6 @@ final class LibraryViewModel: ObservableObject {
         default:
             []
         }
-    }
-
-    private static func resolve(asset: LocalAsset) -> URL? {
-        if let bookmark = asset.fileBookmark {
-            var stale = false
-            if let url = try? URL(
-                resolvingBookmarkData: bookmark,
-                options: [.withSecurityScope, .withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            ) {
-                return url
-            }
-            stale = false
-            if let url = try? URL(
-                resolvingBookmarkData: bookmark,
-                options: [.withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            ) {
-                return url
-            }
-        }
-        guard NSString(string: asset.lastKnownPath).isAbsolutePath else { return nil }
-        return URL(fileURLWithPath: asset.lastKnownPath)
     }
 
     private static func userFacingMessage(for error: Error) -> String {

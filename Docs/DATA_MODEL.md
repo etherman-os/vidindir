@@ -394,7 +394,7 @@ CREATE INDEX download_jobs_media
 
 `queue_position` was added by `v002_download_queue_position`. Existing queued rows are backfilled in row order; every later transition into `queued` receives the next device-local position. The coordinator orders by position, then creation time and ID for deterministic recovery.
 
-Parent jobs are reserved for a future playlist/batch aggregate. The repository permits a parent and child to reference different media in the same workspace and device. The current collection-download feature deliberately creates independent FIFO jobs instead of inventing a fake executable parent; aggregate controls require a separate product/schema milestone.
+`parent_job_id` groups executable jobs without inventing a fake media item. For a collection batch, the first successfully queued job is the root and every later job points to it; every member still owns its own media, request, progress, and terminal state. The relationship survives relaunch and lets cancellation find every still-runnable sibling. The repository therefore permits a parent and child to reference different media in the same workspace and device. A synthetic aggregate/progress job remains a separate product/schema milestone.
 
 State values and transitions are defined in `DOWNLOAD_ENGINE.md`. Progress constraints are validated before persistence: fraction in `0...1`, counts non-negative, and floating-point values finite.
 

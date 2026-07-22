@@ -22,6 +22,41 @@ enum LocalAssetVerifier {
             verifiedAt: Date()
         )
     }
+
+    static func existingFileURL(for asset: LocalAsset) -> URL? {
+        guard asset.status == .available else { return nil }
+
+        var candidates: [URL] = []
+        if let bookmark = asset.fileBookmark {
+            var stale = false
+            if let scoped = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: [.withSecurityScope, .withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) {
+                candidates.append(scoped)
+            } else {
+                stale = false
+                if let unscoped = try? URL(
+                    resolvingBookmarkData: bookmark,
+                    options: [.withoutUI],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &stale
+                ) {
+                    candidates.append(unscoped)
+                }
+            }
+        }
+        if NSString(string: asset.lastKnownPath).isAbsolutePath {
+            candidates.append(URL(fileURLWithPath: asset.lastKnownPath))
+        }
+
+        return candidates.first { candidate in
+            let values = try? candidate.resourceValues(forKeys: [.isRegularFileKey])
+            return values?.isRegularFile == true
+        }?.standardizedFileURL
+    }
 }
 
 enum LocalAssetVerificationError: LocalizedError, Equatable {

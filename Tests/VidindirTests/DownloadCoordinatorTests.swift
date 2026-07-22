@@ -49,6 +49,13 @@ struct DownloadCoordinatorTests {
         #expect(try await fixture.downloadRepository.job(
             id: result.queuedJobIDs[1]
         ).queuePosition == 2)
+        #expect(try await fixture.downloadRepository.job(
+            id: result.queuedJobIDs[0]
+        ).parentJobID == nil)
+        #expect(try await fixture.downloadRepository.job(
+            id: result.queuedJobIDs[1]
+        ).parentJobID == result.queuedJobIDs[0])
+        #expect(result.skippedMediaItemIDs.isEmpty)
 
         await coordinator.start()
         try await eventually {
@@ -57,6 +64,150 @@ struct DownloadCoordinatorTests {
             )) == 2
         }
         #expect(backend.startedURLs == [first.sourceURL, third.sourceURL])
+    }
+
+    @Test func batchSkipsOnlyAssetsWhoseFilesStillExist() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let downloaded = try saved(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/already-downloaded")!,
+            destination: .libraryOnly
+        )))
+        let stale = try saved(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/stale-download")!,
+            destination: .libraryOnly
+        )))
+        let pending = try saved(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/not-downloaded")!,
+            destination: .libraryOnly
+        )))
+        let existingAsset = try await fixture.completeJobWithAsset(
+            mediaItemID: downloaded.id,
+            fileName: "existing.mp4",
+            createFile: true
+        )
+        let staleAsset = try await fixture.completeJobWithAsset(
+            mediaItemID: stale.id,
+            fileName: "missing.mp4",
+            createFile: false
+        )
+        let backend = ImmediateCoordinatorBackend()
+        let coordinator = fixture.makeCoordinator(backend: backend)
+
+        let result = await coordinator.enqueueBatch([
+            DownloadBatchEntry(
+                request: fixture.request(url: downloaded.sourceURL),
+                mediaItemID: downloaded.id
+            ),
+            DownloadBatchEntry(
+                request: fixture.request(url: stale.sourceURL),
+                mediaItemID: stale.id
+            ),
+            DownloadBatchEntry(
+                request: fixture.request(url: pending.sourceURL),
+                mediaItemID: pending.id
+            ),
+        ])
+
+        #expect(result.skippedMediaItemIDs == [downloaded.id])
+        #expect(result.queuedJobIDs.count == 2)
+        #expect(result.failures.isEmpty)
+        #expect(try await fixture.downloadRepository.localAssets(
+            mediaItemID: downloaded.id
+        ).first { $0.id == existingAsset.id }?.status == .available)
+        #expect(try await fixture.downloadRepository.localAssets(
+            mediaItemID: stale.id
+        ).first { $0.id == staleAsset.id }?.status == .missing)
+
+        await coordinator.start()
+        try await eventually {
+            backend.startedURLs.count == 2
+        }
+        #expect(backend.startedURLs == [stale.sourceURL, pending.sourceURL])
+    }
+
+    @Test func batchContinuesAfterRelaunchInterruptsTheInflightItem() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        let first = try saved(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/persisted-batch-first")!,
+            destination: .libraryOnly
+        )))
+        let second = try saved(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/persisted-batch-second")!,
+            destination: .libraryOnly
+        )))
+        let backend = ImmediateCoordinatorBackend()
+        let originalCoordinator = fixture.makeCoordinator(backend: backend)
+        let result = await originalCoordinator.enqueueBatch([
+            DownloadBatchEntry(
+                request: fixture.request(url: first.sourceURL),
+                mediaItemID: first.id
+            ),
+            DownloadBatchEntry(
+                request: fixture.request(url: second.sourceURL),
+                mediaItemID: second.id
+            ),
+        ])
+        let rootID = try #require(result.queuedJobIDs.first)
+        let childID = try #require(result.queuedJobIDs.last)
+        #expect(try await fixture.downloadRepository.job(id: childID).parentJobID == rootID)
+        _ = try await fixture.downloadRepository.transitionJob(
+            id: rootID,
+            from: .queued,
+            to: .downloading
+        )
+
+        let relaunchedCoordinator = fixture.makeCoordinator(backend: backend)
+        await relaunchedCoordinator.start()
+        try await eventually {
+            try await fixture.downloadRepository.job(id: childID).state == .completed
+        }
+
+        #expect(try await fixture.downloadRepository.job(id: rootID).state == .interrupted)
+        #expect(backend.startedURLs == [second.sourceURL])
+        #expect(try await fixture.downloadRepository.job(id: childID).parentJobID == rootID)
+    }
+
+    @Test func cancellingAnActiveBatchCancelsEveryRemainingJob() async throws {
+        let fixture = try CoordinatorFixture()
+        defer { fixture.remove() }
+        var items: [MediaItem] = []
+        for index in 0..<3 {
+            items.append(try saved(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+                sourceURL: URL(string: "https://example.com/cancel-batch-\(index)")!,
+                destination: .libraryOnly
+            ))))
+        }
+        let backend = BlockingCoordinatorBackend()
+        let coordinator = fixture.makeCoordinator(backend: backend)
+        let result = await coordinator.enqueueBatch(items.map { item in
+            DownloadBatchEntry(
+                request: fixture.request(url: item.sourceURL),
+                mediaItemID: item.id
+            )
+        })
+        #expect(result.queuedJobIDs.count == 3)
+
+        await coordinator.start()
+        try await eventually { backend.isDownloading }
+        await coordinator.cancel(result.queuedJobIDs[0])
+        try await eventually {
+            for jobID in result.queuedJobIDs {
+                if try await fixture.downloadRepository.job(id: jobID).state != .cancelled {
+                    return false
+                }
+            }
+            return true
+        }
+
+        #expect(backend.cancelCount == 1)
+        #expect(try await fixture.downloadRepository.job(
+            id: result.queuedJobIDs[1]
+        ).attemptCount == 0)
+        #expect(try await fixture.downloadRepository.job(
+            id: result.queuedJobIDs[2]
+        ).attemptCount == 0)
     }
 
     @Test func queuesInDurableFIFOOrderAndKeepsTheSelectedDuplicateIdentity() async throws {
@@ -281,6 +432,47 @@ private final class CoordinatorFixture: @unchecked Sendable {
             destinationBookmark: nil,
             destinationPath: rootURL.path
         ))
+    }
+
+    func completeJobWithAsset(
+        mediaItemID: MediaItemID,
+        fileName: String,
+        createFile: Bool
+    ) async throws -> LocalAsset {
+        let fileURL = rootURL.appendingPathComponent(fileName)
+        if createFile {
+            try Data([0x01]).write(to: fileURL)
+        }
+        var job = try await makeJob(mediaItemID: mediaItemID)
+        job = try await downloadRepository.transitionJob(
+            id: job.id, from: .created, to: .resolving
+        )
+        job = try await downloadRepository.transitionJob(
+            id: job.id, from: .resolving, to: .ready
+        )
+        job = try await downloadRepository.transitionJob(
+            id: job.id, from: .ready, to: .queued
+        )
+        job = try await downloadRepository.transitionJob(
+            id: job.id, from: .queued, to: .downloading
+        )
+        job = try await downloadRepository.transitionJob(
+            id: job.id, from: .downloading, to: .postProcessing
+        )
+        let completed = try await downloadRepository.completeJob(
+            id: job.id,
+            asset: try VerifiedLocalAsset(
+                fileBookmark: Data("bookmark".utf8),
+                absolutePath: fileURL.path,
+                fileSizeBytes: createFile ? 1 : 0,
+                container: "mp4",
+                verifiedAt: now
+            )
+        )
+        return try #require(
+            await downloadRepository.localAssets(mediaItemID: mediaItemID)
+                .first { $0.id == completed.localAssetID }
+        )
     }
 
     private func sourceURL(for mediaItemID: MediaItemID) async throws -> URL {
