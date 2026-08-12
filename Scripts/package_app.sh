@@ -11,6 +11,7 @@ APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 CONTENTS="$APP_BUNDLE/Contents"
 ICONSET="$ROOT_DIR/.build/Vidindir.iconset"
 ICON_FILE="$ROOT_DIR/.build/AppIcon.icns"
+ICON_SOURCE="$ROOT_DIR/Support/AppIconSource.png"
 SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-}"
 SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-}"
 
@@ -69,7 +70,7 @@ fi
 
 /bin/rm -rf "$ICONSET"
 /bin/mkdir -p "$ICONSET"
-/usr/bin/swift "$ROOT_DIR/Scripts/generate_icon.swift" "$ICONSET"
+/usr/bin/swift "$ROOT_DIR/Scripts/generate_icon.swift" "$ICON_SOURCE" "$ICONSET"
 /usr/bin/iconutil -c icns "$ICONSET" -o "$ICON_FILE"
 /bin/cp "$ICON_FILE" "$CONTENTS/Resources/AppIcon.icns"
 
