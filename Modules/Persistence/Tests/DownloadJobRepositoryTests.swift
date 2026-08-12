@@ -241,6 +241,42 @@ struct DownloadJobRepositoryTests {
         #expect(queued.map(\.id) == [jobs[3].id])
     }
 
+    @Test func activeQueueOrderingShowsCurrentWorkThenFIFOQueueThenPausedJobs() async throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        var media: [MediaItem] = []
+        for index in 0..<4 {
+            media.append(try await fixture.makeMediaItem(
+                source: "https://example.com/queue-order-\(index)"
+            ))
+        }
+        var jobs: [DownloadJob] = []
+        for item in media {
+            var job = try await fixture.makeDownloadJob(mediaItemID: item.id)
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .created, to: .resolving)
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .resolving, to: .ready)
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .ready, to: .queued)
+            jobs.append(job)
+        }
+        let current = try await fixture.downloadRepository.transitionJob(
+            id: jobs[0].id,
+            from: .queued,
+            to: .downloading
+        )
+        let paused = try await fixture.downloadRepository.transitionJob(
+            id: jobs[3].id,
+            from: .queued,
+            to: .paused
+        )
+
+        let ordered = try await fixture.downloadRepository.jobs(DownloadJobQuery(
+            states: [.downloading, .queued, .paused],
+            sortOrder: .activeQueue
+        ))
+
+        #expect(ordered.map(\.id) == [current.id, jobs[1].id, jobs[2].id, paused.id])
+    }
+
     @Test func countsSearchAndPaginatesDeviceJobsWithoutDroppingTerminalStates() async throws {
         let fixture = try PersistenceFixture()
         defer { fixture.remove() }

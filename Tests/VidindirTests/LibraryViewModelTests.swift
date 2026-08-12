@@ -487,6 +487,65 @@ struct LibraryViewModelTests {
         #expect(assets.first?.status == .missing)
     }
 
+    @Test @MainActor func activeDownloadsFollowExecutionQueueInsteadOfNewestHistoryOrder() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        var media: [MediaItem] = []
+        for index in 0..<4 {
+            media.append(try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+                sourceURL: URL(string: "https://example.com/active-queue-\(index)")!,
+                destination: .libraryOnly
+            ))))
+        }
+        var jobs: [DownloadJob] = []
+        for item in media {
+            var job = try await fixture.downloadRepository.createJob(CreateDownloadJobCommand(
+                mediaItemID: item.id,
+                mediaKind: .video,
+                container: "mp4",
+                requestJSON: #"{"format":"video"}"#,
+                destinationBookmark: nil,
+                destinationPath: fixture.rootURL.path
+            ))
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .created, to: .resolving)
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .resolving, to: .ready)
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .ready, to: .queued)
+            jobs.append(job)
+        }
+        let current = try await fixture.downloadRepository.transitionJob(
+            id: jobs[0].id,
+            from: .queued,
+            to: .downloading
+        )
+        let paused = try await fixture.downloadRepository.transitionJob(
+            id: jobs[3].id,
+            from: .queued,
+            to: .paused
+        )
+        let jobIDs = jobs.map(\.id)
+        try await fixture.database.pool.write { db in
+            let createdTimes: [Int64] = [4_000, 1_000, 3_000, 2_000]
+            for (jobID, timestamp) in zip(jobIDs, createdTimes) {
+                try db.execute(
+                    sql: "UPDATE download_jobs SET created_at = ? WHERE id = ?",
+                    arguments: [timestamp, jobID.description]
+                )
+            }
+        }
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        model.destination = .activeDownloads
+
+        await model.reloadNow()
+
+        #expect(model.downloadJobs.map(\.id) == [current.id, jobs[1].id, jobs[2].id, paused.id])
+    }
+
     @Test @MainActor func downloadCountsSeparateActiveCompletedAndAttentionStates() async throws {
         let fixture = try LibraryModelFixture()
         defer { fixture.remove() }

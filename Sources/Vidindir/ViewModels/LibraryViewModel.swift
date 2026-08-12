@@ -277,6 +277,7 @@ final class LibraryViewModel: ObservableObject {
                 let query = DownloadJobQuery(
                     states: states,
                     searchText: searchText,
+                    sortOrder: Self.downloadJobSortOrder(for: selectedDestination),
                     limit: Self.pageSize
                 )
                 async let loadedJobs = downloadRepository.jobs(query)
@@ -342,6 +343,7 @@ final class LibraryViewModel: ObservableObject {
                     let query = DownloadJobQuery(
                         states: Self.downloadStates(for: selectedDestination),
                         searchText: selectedSearchText,
+                        sortOrder: Self.downloadJobSortOrder(for: selectedDestination),
                         limit: Self.pageSize,
                         offset: self.downloadJobs.count
                     )
@@ -998,6 +1000,12 @@ final class LibraryViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             await self?.performReload()
         }
+    }
+
+    private static func downloadJobSortOrder(
+        for destination: LibraryDestination
+    ) -> DownloadJobSortOrder {
+        destination == .activeDownloads ? .activeQueue : .newestFirst
     }
 
     private static func downloadStates(

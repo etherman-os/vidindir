@@ -111,10 +111,16 @@ public struct DownloadFailure: Equatable, Hashable, Sendable {
     }
 }
 
+public enum DownloadJobSortOrder: String, Equatable, Hashable, Sendable {
+    case newestFirst
+    case activeQueue
+}
+
 public struct DownloadJobQuery: Equatable, Hashable, Sendable {
     public let workspaceID: WorkspaceID
     public let states: Set<DownloadJobState>
     public let searchText: String?
+    public let sortOrder: DownloadJobSortOrder
     public let limit: Int
     public let offset: Int
 
@@ -122,12 +128,14 @@ public struct DownloadJobQuery: Equatable, Hashable, Sendable {
         workspaceID: WorkspaceID = VidindirIdentity.personalWorkspace,
         states: Set<DownloadJobState> = [],
         searchText: String? = nil,
+        sortOrder: DownloadJobSortOrder = .newestFirst,
         limit: Int = 100,
         offset: Int = 0
     ) {
         self.workspaceID = workspaceID
         self.states = states
         self.searchText = searchText
+        self.sortOrder = sortOrder
         self.limit = limit
         self.offset = offset
     }
