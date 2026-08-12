@@ -9,6 +9,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <description>Verified Vidindir application updates.</description>
         <language>en</language>
         <item>
+            <title>0.0.3</title>
+            <pubDate>Wed, 12 Aug 2026 19:12:08 +0000</pubDate>
+            <link>https://github.com/etherman-os/vidindir</link>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>0.0.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/etherman-os/vidindir/releases/download/v0.0.3/Vidindir-0.0.3-macOS-universal2.zip" length="8955123" type="application/octet-stream" sparkle:edSignature="J8o5KGvEOyy67sksit5VHyN1Ly7IDmhTxK2OXrxFJKPZmokeP8AOmjcBj33G9YtRqb71KbqFaTG9XZJvOVO1Dw=="/>
+        </item>
+        <item>
             <title>0.0.2</title>
             <pubDate>Wed, 22 Jul 2026 16:38:51 +0000</pubDate>
             <link>https://github.com/etherman-os/vidindir</link>
@@ -29,6 +38,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: oNL7VLur1ZctU6Bxjo5xrjarJpEzRdFDu8uF0GTc/cNP/4JssHXIew+mSgHp5L/uDRRxwpw9osiMbLC8bA2MBw==
-length: 1996
+edSignature: lCpiTs4kvsmB2O/T/5TgVceSusVeIwECUSXWFjjVTLsszBe/P4gOWoU999FCuiT+DFBVBG6dl8D6DGglY8vBCQ==
+length: 2682
 -->
