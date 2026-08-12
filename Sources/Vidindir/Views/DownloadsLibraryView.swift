@@ -7,62 +7,48 @@ struct DownloadsLibraryView: View {
     @State private var pendingClearScope: DownloadHistoryScope?
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                if library.completedDownloadCount > 0 || library.failedDownloadCount > 0 {
-                    HStack {
-                        Spacer()
-                        Menu("Clear History", systemImage: "trash") {
-                            Button("Clear Completed…") {
-                                pendingClearScope = .completed
-                            }
-                            .disabled(library.completedDownloadCount == 0)
-                            Button("Clear Needs Attention…") {
-                                pendingClearScope = .needsAttention
-                            }
-                            .disabled(library.failedDownloadCount == 0)
-                            Divider()
-                            Button("Clear All Finished History…", role: .destructive) {
-                                pendingClearScope = .allTerminal
-                            }
-                        }
-                        .menuStyle(.borderlessButton)
-                    }
-                }
+        VStack(spacing: 0) {
+            if library.completedDownloadCount > 0 || library.failedDownloadCount > 0 {
+                historyActions
+                Divider()
+            }
 
+            List(selection: $library.selectedDownloadJobID) {
                 if download.shouldShowToolSetup {
                     ToolSetupView(model: download)
+                        .listRowSeparator(.hidden)
                 }
 
                 if download.phase != .idle {
                     DownloadStatusView(model: download)
+                        .listRowSeparator(.hidden)
                 }
 
                 if library.downloadJobs.isEmpty, !download.phase.isBusy {
                     emptyState
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 80)
+                        .frame(maxWidth: .infinity, minHeight: 320)
+                        .listRowSeparator(.hidden)
                 } else {
                     ForEach(library.downloadJobs) { job in
                         DownloadJobRow(
                             job: job,
                             item: library.items.first { $0.id == job.mediaItemID },
-                            isSelected: library.selectedDownloadJobID == job.id
-                        ) {
-                            library.selectedDownloadJobID = job.id
-                            library.selectedMediaItemID = job.mediaItemID
-                        } reveal: {
-                            guard let item = library.items.first(where: { $0.id == job.mediaItemID }) else {
-                                return
+                            reveal: {
+                                guard let item = library.items.first(where: { $0.id == job.mediaItemID }) else {
+                                    return
+                                }
+                                library.revealLocalFile(item)
+                            },
+                            retry: {
+                                download.retryDownload(job.id)
                             }
-                            library.revealLocalFile(item)
-                        } retry: {
-                            download.retryDownload(job.id)
-                        }
+                        )
+                        .tag(job.id)
                     }
 
                     if library.canLoadMore {
                         loadMoreButton
+                            .listRowSeparator(.hidden)
                     }
                 }
 
@@ -72,9 +58,14 @@ struct DownloadsLibraryView: View {
                     }
                 }
             }
-            .padding(20)
-            .frame(maxWidth: 760)
-            .frame(maxWidth: .infinity)
+            .listStyle(.inset)
+        }
+        .onChange(of: library.selectedDownloadJobID) { _, selectedID in
+            guard let selectedID,
+                  let job = library.downloadJobs.first(where: { $0.id == selectedID }) else {
+                return
+            }
+            library.selectedMediaItemID = job.mediaItemID
         }
         .overlay {
             if library.isLoading, library.downloadJobs.isEmpty {
@@ -97,6 +88,30 @@ struct DownloadsLibraryView: View {
         } message: { _ in
             Text("Only download activity records are removed. Saved links, downloaded files, and local-file records stay intact.")
         }
+    }
+
+    private var historyActions: some View {
+        HStack {
+            Spacer()
+            Menu("Clear History", systemImage: "trash") {
+                Button("Clear Completed…") {
+                    pendingClearScope = .completed
+                }
+                .disabled(library.completedDownloadCount == 0)
+                Button("Clear Needs Attention…") {
+                    pendingClearScope = .needsAttention
+                }
+                .disabled(library.failedDownloadCount == 0)
+                Divider()
+                Button("Clear All Finished History…", role: .destructive) {
+                    pendingClearScope = .allTerminal
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
     }
 
     private var emptyState: some View {
@@ -139,7 +154,7 @@ struct DownloadsLibraryView: View {
                 Text("Load More")
             }
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.borderless)
         .disabled(library.isLoadingMore)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
@@ -158,81 +173,88 @@ struct DownloadsLibraryView: View {
 private struct DownloadJobRow: View {
     let job: DownloadJob
     let item: LibraryItemSummary?
-    let isSelected: Bool
-    let select: () -> Void
     let reveal: () -> Void
     let retry: () -> Void
 
     var body: some View {
-        Button(action: select) {
-            HStack(spacing: 14) {
-                if let item {
-                    MediaThumbnail(item: item, compact: true)
-                        .frame(width: 96, height: 54)
-                } else {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.secondary.opacity(0.08))
-                        .frame(width: 96, height: 54)
-                        .overlay { Image(systemName: "film").foregroundStyle(.secondary) }
+        HStack(alignment: .top, spacing: 12) {
+            thumbnail
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item?.mediaItem.displayTitle ?? "Media download")
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+
+                    Spacer(minLength: 8)
+                    rowAction
                 }
 
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(item?.mediaItem.displayTitle ?? "Media download")
-                        .font(.headline)
-                        .lineLimit(1)
-                    HStack(spacing: 7) {
-                        Label(job.state.displayName, systemImage: statusSymbol)
-                        Text("·")
-                        Text(job.mediaKind == .audio ? "Audio" : "Video")
-                        if let container = job.container {
-                            Text(container.uppercased())
-                        }
+                HStack(spacing: 6) {
+                    Label(job.state.displayName, systemImage: statusSymbol)
+                        .foregroundStyle(statusColor)
+                    Text("·")
+                    Text(job.mediaKind == .audio ? "Audio" : "Video")
+                    if let container = job.container {
+                        Text(container.uppercased())
                     }
-                    .font(.caption)
-                    .foregroundStyle(statusColor)
-
+                    Spacer(minLength: 8)
                     if let fraction = job.progressFraction,
                        job.state != .completed {
-                        ProgressView(value: fraction)
-                            .progressViewStyle(.linear)
+                        Text(fraction, format: .percent.precision(.fractionLength(0)))
+                            .monospacedDigit()
                     }
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
-                Spacer()
+                if let fraction = job.progressFraction,
+                   job.state != .completed {
+                    ProgressView(value: fraction)
+                        .progressViewStyle(.linear)
+                        .controlSize(.small)
+                }
 
-                if job.state == .completed {
-                    Button("Show in Finder", action: reveal)
-                        .buttonStyle(.bordered)
-                } else {
-                    VStack(alignment: .trailing, spacing: 6) {
-                        if [.failed, .cancelled, .interrupted].contains(job.state) {
-                            Button("Try Again", action: retry)
-                                .buttonStyle(.bordered)
-                        }
-                        if let summary = job.errorSummary {
-                            Text(summary)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .frame(maxWidth: 180, alignment: .trailing)
-                        }
-                    }
+                if let summary = job.errorSummary {
+                    Text(summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(12)
-            .background(
-                isSelected ? VidindirTheme.accent.opacity(0.10) : Color(nsColor: .controlBackgroundColor),
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(
-                        isSelected ? VidindirTheme.accent.opacity(0.65) : Color.primary.opacity(0.06)
-                    )
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 12))
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let item {
+            MediaThumbnail(item: item, compact: true)
+                .frame(width: 80, height: 45)
+        } else {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
+                .frame(width: 80, height: 45)
+                .overlay {
+                    Image(systemName: "film")
+                        .foregroundStyle(.secondary)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var rowAction: some View {
+        if job.state == .completed {
+            Button("Show in Finder", action: reveal)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+        } else if [.failed, .cancelled, .interrupted].contains(job.state) {
+            Button("Try Again", action: retry)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+        }
     }
 
     private var statusSymbol: String {
