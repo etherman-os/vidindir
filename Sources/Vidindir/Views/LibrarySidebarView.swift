@@ -8,91 +8,64 @@ struct LibrarySidebarView: View {
     @State private var pendingDeleteCollection: Collection?
 
     var body: some View {
-        VStack(spacing: 0) {
-            List(selection: $library.destination) {
-                Section("Library") {
-                    sidebarRow(.inbox)
-                    sidebarRow(.library)
-                    sidebarRow(.favorites)
-                }
+        List(selection: $library.destination) {
+            Section("Library") {
+                sidebarRow(.inbox)
+                sidebarRow(.library)
+                sidebarRow(.favorites)
+            }
 
-                Section("Downloads") {
-                    sidebarRow(.activeDownloads)
-                    sidebarRow(.completedDownloads)
-                    sidebarRow(.failedDownloads)
-                }
+            Section("Downloads") {
+                sidebarRow(.activeDownloads)
+                sidebarRow(.completedDownloads)
+                sidebarRow(.failedDownloads)
+            }
 
-                Section {
-                    ForEach(userCollections) { collection in
-                        Label(collection.name, systemImage: collection.iconName ?? "folder")
-                            .contentShape(Rectangle())
-                            .onTapGesture {
+            Section {
+                ForEach(userCollections) { collection in
+                    Label(collection.name, systemImage: collection.iconName ?? "folder")
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            library.destination = .collection(collection.id)
+                        }
+                        .dropDestination(for: URL.self) { urls, _ in
+                            guard let url = urls.first else { return false }
+                            saveDropped(url: url, to: collection.id)
+                            return true
+                        }
+                        .dropDestination(for: String.self) { values, _ in
+                            guard let value = values.first,
+                                  let url = URL(string: value) else { return false }
+                            saveDropped(url: url, to: collection.id)
+                            return true
+                        }
+                        .contextMenu {
+                            Button("Open") {
                                 library.destination = .collection(collection.id)
                             }
-                            .dropDestination(for: URL.self) { urls, _ in
-                                guard let url = urls.first else { return false }
-                                saveDropped(url: url, to: collection.id)
-                                return true
+                            Divider()
+                            Button("Delete Collection…", role: .destructive) {
+                                pendingDeleteCollection = collection
                             }
-                            .dropDestination(for: String.self) { values, _ in
-                                guard let value = values.first,
-                                      let url = URL(string: value) else { return false }
-                                saveDropped(url: url, to: collection.id)
-                                return true
-                            }
-                            .contextMenu {
-                                Button("Open") {
-                                    library.destination = .collection(collection.id)
-                                }
-                                Divider()
-                                Button("Delete Collection…", role: .destructive) {
-                                    pendingDeleteCollection = collection
-                                }
-                            }
-                            .tag(LibraryDestination.collection(collection.id))
-                    }
-                } header: {
-                    HStack {
-                        Text("Collections")
-                        Spacer()
-                        Button {
-                            newCollectionName = ""
-                            isCreatingCollection = true
-                        } label: {
-                            Image(systemName: "plus")
                         }
-                        .buttonStyle(.plain)
-                        .help("New Collection")
+                        .tag(LibraryDestination.collection(collection.id))
+                }
+            } header: {
+                HStack {
+                    Text("Collections")
+                    Spacer()
+                    Button {
+                        newCollectionName = ""
+                        isCreatingCollection = true
+                    } label: {
+                        Image(systemName: "plus")
                     }
-                }
-
-                Section("Workspaces") {
-                    Label("Personal", systemImage: "person.crop.circle")
-                        .foregroundStyle(.primary)
+                    .buttonStyle(.plain)
+                    .help("New Collection")
                 }
             }
-            .listStyle(.sidebar)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 7) {
-                    VidindirMark(size: 24)
-                    Text("Vidindir")
-                        .font(.caption.weight(.semibold))
-                }
-                HStack(spacing: 4) {
-                    Link("Built by etherman-os", destination: URL(string: "https://github.com/etherman-os")!)
-                    Text("·")
-                    Link("etherman.org", destination: URL(string: "https://etherman.org")!)
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 11)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .listStyle(.sidebar)
         .navigationTitle("Vidindir")
         .alert("New Collection", isPresented: $isCreatingCollection) {
             TextField("Collection name", text: $newCollectionName)
@@ -138,10 +111,10 @@ struct LibrarySidebarView: View {
                     .monospacedDigit()
             }
         }
-            .contentShape(Rectangle())
-            .onTapGesture { library.destination = destination }
-            .help(helpText(for: destination))
-            .tag(destination)
+        .contentShape(Rectangle())
+        .onTapGesture { library.destination = destination }
+        .help(helpText(for: destination))
+        .tag(destination)
     }
 
     private func count(for destination: LibraryDestination) -> Int {

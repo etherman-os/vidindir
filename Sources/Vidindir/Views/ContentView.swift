@@ -1,4 +1,5 @@
 import AppKit
+import QuickLook
 import SwiftUI
 import VidindirDomain
 
@@ -7,7 +8,8 @@ struct ContentView: View {
     @ObservedObject var library: LibraryViewModel
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("library.displayMode") private var displayMode: LibraryDisplayMode = .grid
-    @AppStorage("integrations.clipboardSuggestions") private var clipboardSuggestions = true
+    @AppStorage("library.sortOrder") private var sortOrder: LibrarySortOrder = .addedNewest
+    @AppStorage("integrations.clipboardSuggestions") private var clipboardSuggestions = AppPreferenceDefaults.clipboardSuggestions
     @AppStorage("layout.inspectorPreferred") private var inspectorPreferred = true
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var windowWidth: CGFloat = 0
@@ -16,7 +18,6 @@ struct ContentView: View {
     @State private var didInitializeAdaptiveLayout = false
     @State private var inspectorWasAutomaticallyCollapsed = false
     @State private var sidebarWasAutomaticallyCollapsed = false
-    @State private var quickAddInitialLink = ""
     @State private var detectedClipboardURL: URL?
     @State private var lastInspectedClipboardValue = ""
     @State private var compactSearchPresented = false
@@ -33,6 +34,13 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 176, ideal: 205, max: 248)
         } detail: {
             mainContent
+                .onKeyPress(.space) {
+                    guard library.selectedItem?.localAssetStatus == .available else {
+                        return .ignored
+                    }
+                    library.presentQuickLookForSelection()
+                    return .handled
+                }
                 .navigationTitle(library.destinationTitle)
                 .modifier(
                     AdaptiveToolbarSearch(
@@ -59,10 +67,19 @@ struct ContentView: View {
                     }
             }
         }
-        .overlay { transientPanelOverlay }
+        .overlay { compactInspectorOverlay }
+        .sheet(isPresented: $library.isQuickAddPresented) {
+            QuickAddView(
+                library: library,
+                download: model,
+                initialLink: library.quickAddInitialText,
+                close: { library.isQuickAddPresented = false }
+            )
+        }
         .sheet(isPresented: $model.showsResponsibleUse) {
             ResponsibleUseView(accept: model.acceptResponsibleUse)
         }
+        .quickLookPreview($library.quickLookPreviewURL)
         .alert(item: $model.alert) { alert in
             Alert(
                 title: Text(alert.title),
@@ -78,9 +95,13 @@ struct ContentView: View {
             )
         }
         .onAppear {
+            library.sortOrder = sortOrder
             model.bootstrap()
             library.bootstrap()
             inspectClipboardIfNeeded()
+        }
+        .onChange(of: sortOrder) { _, value in
+            library.sortOrder = value
         }
         .onChange(of: model.phase) {
             library.reload()
@@ -93,11 +114,6 @@ struct ContentView: View {
                 inspectClipboardIfNeeded()
             } else {
                 dismissTransientPanels()
-            }
-        }
-        .onChange(of: library.isQuickAddPresented) {
-            if !library.isQuickAddPresented {
-                quickAddInitialLink = ""
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -149,15 +165,18 @@ struct ContentView: View {
                             }
                         }
                         Divider()
+                        Picker("Sort By", selection: $sortOrder) {
+                            ForEach(LibrarySortOrder.allCases, id: \.self) { order in
+                                Text(order.menuTitle).tag(order)
+                            }
+                        }
+                        Divider()
                     }
 
                     Button("Show Inspector…", systemImage: "sidebar.right") {
                         toggleInspector()
                     }
                     .disabled(!hasInspectorContent)
-
-                    Divider()
-                    Label(engineMenuTitle, systemImage: engineMenuSymbol)
                 } label: {
                     Label("View Options", systemImage: "ellipsis.circle")
                 }
@@ -199,10 +218,22 @@ struct ContentView: View {
                 }
             }
 
+            if windowWidth >= 760, !library.isDownloadDestination {
+                Menu {
+                    Picker("Sort By", selection: $sortOrder) {
+                        ForEach(LibrarySortOrder.allCases, id: \.self) { order in
+                            Text(order.menuTitle).tag(order)
+                        }
+                    }
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                }
+                .help("Sort Library")
+            }
+
             Button {
-                quickAddInitialLink = ""
                 compactInspectorPresented = false
-                library.isQuickAddPresented = true
+                library.presentQuickAdd()
             } label: {
                 Label("Add Link", systemImage: "plus")
             }
@@ -217,7 +248,6 @@ struct ContentView: View {
                 .help(isInspectorVisible ? "Hide Inspector" : "Show Inspector")
             }
         }
-
     }
 
     private var inspectorBinding: Binding<Bool> {
@@ -243,16 +273,6 @@ struct ContentView: View {
 
     private var hasInspectorContent: Bool {
         library.selectedItem != nil || library.selectedJob != nil
-    }
-
-    private var engineMenuTitle: String {
-        if model.isCheckingEngineUpdates { return "Engine update in progress" }
-        return model.engineStatus.isReady ? "Download engine ready" : "Engine setup required"
-    }
-
-    private var engineMenuSymbol: String {
-        if model.isCheckingEngineUpdates { return "arrow.triangle.2.circlepath" }
-        return model.engineStatus.isReady ? "checkmark.circle.fill" : "wrench.and.screwdriver"
     }
 
     private func toggleInspector() {
@@ -322,45 +342,31 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var transientPanelOverlay: some View {
-        if library.isQuickAddPresented || compactInspectorPresented {
+    private var compactInspectorOverlay: some View {
+        if compactInspectorPresented {
             GeometryReader { proxy in
                 ZStack(alignment: .topTrailing) {
                     Color.black.opacity(0.001)
                         .contentShape(Rectangle())
-                        .onTapGesture { dismissTransientPanels() }
+                        .onTapGesture { compactInspectorPresented = false }
 
-                    Group {
-                        if library.isQuickAddPresented {
-                            QuickAddView(
-                                library: library,
-                                download: model,
-                                initialLink: quickAddInitialLink,
-                                close: dismissTransientPanels
-                            )
-                        } else {
-                            MediaInspectorView(library: library, startDownload: startDownload)
-                                .frame(
-                                    width: min(360, max(320, proxy.size.width - 32)),
-                                    height: min(560, max(360, proxy.size.height - 80))
-                                )
+                    MediaInspectorView(library: library, startDownload: startDownload)
+                        .frame(
+                            width: min(360, max(320, proxy.size.width - 32)),
+                            height: min(560, max(360, proxy.size.height - 80))
+                        )
+                        .background(.regularMaterial)
+                        .overlay {
+                            Rectangle()
+                                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
                         }
-                    }
-                    .background(
-                        .regularMaterial,
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.11))
-                    }
-                    .shadow(color: .black.opacity(0.22), radius: 22, y: 10)
-                    .padding(.top, 50)
-                    .padding(.trailing, 18)
-                    .onExitCommand { dismissTransientPanels() }
+                        .shadow(color: .black.opacity(0.16), radius: 18, y: 8)
+                        .padding(.top, 50)
+                        .padding(.trailing, 18)
+                        .onExitCommand { compactInspectorPresented = false }
                 }
             }
-            .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .topTrailing)))
+            .transition(.opacity)
             .zIndex(20)
         }
     }
@@ -434,8 +440,6 @@ struct ContentView: View {
                 detectedClipboardURL = nil
                 presentQuickAdd(url: url)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(VidindirTheme.accent)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -458,14 +462,24 @@ struct ContentView: View {
     }
 
     private func presentQuickAdd(url: URL) {
-        quickAddInitialLink = url.absoluteString
         compactInspectorPresented = false
-        library.isQuickAddPresented = true
+        library.presentQuickAdd(initialText: url.absoluteString)
     }
 
     private static func isHTTPURL(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
         return (scheme == "http" || scheme == "https") && url.host != nil
+    }
+}
+
+private extension LibrarySortOrder {
+    var menuTitle: String {
+        switch self {
+        case .addedNewest: "Date Added — Newest First"
+        case .addedOldest: "Date Added — Oldest First"
+        case .titleAscending: "Title — A to Z"
+        case .titleDescending: "Title — Z to A"
+        }
     }
 }
 

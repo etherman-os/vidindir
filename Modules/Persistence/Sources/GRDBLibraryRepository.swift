@@ -565,6 +565,18 @@ public actor GRDBLibraryRepository: LibraryRepository {
                 arguments: arguments
             ) ?? 0
 
+            let orderClause: String
+            switch query.sortOrder {
+            case .addedNewest:
+                orderClause = "m.created_at DESC, m.id"
+            case .addedOldest:
+                orderClause = "m.created_at ASC, m.id"
+            case .titleAscending:
+                orderClause = "COALESCE(NULLIF(m.title, ''), m.source_url) COLLATE NOCASE ASC, m.created_at DESC, m.id"
+            case .titleDescending:
+                orderClause = "COALESCE(NULLIF(m.title, ''), m.source_url) COLLATE NOCASE DESC, m.created_at DESC, m.id"
+            }
+
             var pageArguments = arguments
             pageArguments += [query.limit, query.offset]
             let records = try MediaItemRecord.fetchAll(
@@ -572,7 +584,7 @@ public actor GRDBLibraryRepository: LibraryRepository {
                 sql: """
                     SELECT m.* FROM media_items m
                     WHERE \(predicate)
-                    ORDER BY m.created_at DESC, m.id
+                    ORDER BY \(orderClause)
                     LIMIT ? OFFSET ?
                     """,
                 arguments: pageArguments

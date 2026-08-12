@@ -318,6 +318,29 @@ public actor GRDBDownloadJobRepository: DownloadJobRepository {
             guard let filter = Self.jobFilter(query: query, deviceID: deviceID) else {
                 return []
             }
+            let orderClause: String
+            switch query.sortOrder {
+            case .newestFirst:
+                orderClause = "j.created_at DESC, j.id DESC"
+            case .activeQueue:
+                orderClause = """
+                    CASE j.state
+                        WHEN 'downloading' THEN 0
+                        WHEN 'post_processing' THEN 0
+                        WHEN 'resolving' THEN 1
+                        WHEN 'ready' THEN 1
+                        WHEN 'created' THEN 1
+                        WHEN 'queued' THEN 2
+                        WHEN 'paused' THEN 3
+                        ELSE 4
+                    END,
+                    CASE WHEN j.queue_position IS NULL THEN 1 ELSE 0 END,
+                    j.queue_position ASC,
+                    j.created_at ASC,
+                    j.id ASC
+                    """
+            }
+
             var arguments = filter.arguments
             arguments += [query.limit, query.offset]
             return try DownloadJobRecord.fetchAll(
@@ -327,7 +350,7 @@ public actor GRDBDownloadJobRepository: DownloadJobRepository {
                     FROM download_jobs j
                     JOIN media_items m ON m.id = j.media_item_id
                     WHERE \(filter.predicate)
-                    ORDER BY j.created_at DESC, j.id DESC
+                    ORDER BY \(orderClause)
                     LIMIT ? OFFSET ?
                     """,
                 arguments: arguments

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import VidindirDomain
 import VidindirPersistence
@@ -37,12 +38,12 @@ struct VidindirApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Add Link…") {
-                    library.isQuickAddPresented = true
+                    library.presentQuickAdd()
                 }
                 .keyboardShortcut("l", modifiers: .command)
 
                 Button("New Media Item…") {
-                    library.isQuickAddPresented = true
+                    library.presentQuickAdd()
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
@@ -54,16 +55,18 @@ struct VidindirApp: App {
             }
 
             CommandMenu("Download") {
-                Button("Paste Link") {
-                    model.pasteFromClipboard()
+                Button("Paste Link…") {
+                    guard let value = NSPasteboard.general.string(forType: .string),
+                          !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        library.alert = AppAlert(
+                            title: "Nothing to paste",
+                            message: "Copy one or more media links, then try again."
+                        )
+                        return
+                    }
+                    library.presentQuickAdd(initialText: value)
                 }
                 .keyboardShortcut("v", modifiers: [.command, .shift])
-
-                Button("Start Download") {
-                    model.startDownload()
-                }
-                .keyboardShortcut(.return, modifiers: [.command])
-                .disabled(!model.canStartDownload)
 
                 Button("Cancel Download") {
                     model.cancelDownload()

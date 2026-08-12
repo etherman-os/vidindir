@@ -93,15 +93,6 @@ final class AppModel: ObservableObject {
         engineUpdateSchedulerTask?.cancel()
     }
 
-    var canStartDownload: Bool {
-        !isEnqueuingDownload
-            && (downloadCoordinator != nil || !phase.isBusy)
-            && !isInstallingTools
-            && !isCheckingEngineUpdates
-            && engineStatus.isReady
-            && !linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     var shouldShowToolSetup: Bool {
         isInstallingTools || !engineStatus.isReady
     }
@@ -192,15 +183,6 @@ final class AppModel: ObservableObject {
         guard !phase.isBusy, quality != selectedQuality else { return }
         selectedQuality = quality
         preferences.setQuality(quality, for: selectedFormat)
-    }
-
-    func pasteFromClipboard() {
-        guard !phase.isBusy else { return }
-        guard let string = NSPasteboard.general.string(forType: .string) else {
-            alert = AppAlert(title: "Nothing to paste", message: "Copy a media link, then try again.")
-            return
-        }
-        linkText = string.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func chooseDestinationDirectory() {

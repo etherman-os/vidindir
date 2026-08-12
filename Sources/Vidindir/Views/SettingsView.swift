@@ -3,7 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var appUpdater: AppUpdateController
-    @AppStorage("integrations.clipboardSuggestions") private var clipboardSuggestions = true
+    @AppStorage("integrations.clipboardSuggestions") private var clipboardSuggestions = AppPreferenceDefaults.clipboardSuggestions
 
     var body: some View {
         TabView {
@@ -46,7 +46,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Suggest copied media links", isOn: $clipboardSuggestions)
-                Text("When enabled, Vidindir checks the clipboard only while the app is active. Clipboard contents are never uploaded to Vidindir.")
+                Text("Off by default. When enabled, Vidindir checks the clipboard only while the app is active. Clipboard contents are never uploaded to Vidindir.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

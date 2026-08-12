@@ -12,11 +12,13 @@ struct LibraryBrowserView: View {
     @State private var pendingCollectionItems: [LibraryItemSummary] = []
     @State private var isPreparingCollectionDownload = false
     @State private var showsCollectionDownloadConfirmation = false
+    @FocusState private var focusedMediaID: MediaItemID?
 
     var body: some View {
         VStack(spacing: 0) {
-            scopeExplanation
-            Divider()
+            if library.currentCollection != nil {
+                collectionActions
+            }
             Group {
                 if library.items.isEmpty, !library.isLoading {
                     emptyState
@@ -107,22 +109,31 @@ struct LibraryBrowserView: View {
     private var grid: some View {
         ScrollView {
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 190, maximum: 280), spacing: 18)],
+                columns: [GridItem(.adaptive(minimum: 176, maximum: 260), spacing: 14)],
                 alignment: .leading,
-                spacing: 20
+                spacing: 18
             ) {
                 ForEach(library.items) { item in
                     MediaGridCell(
                         item: item,
-                        isSelected: library.selectedMediaItemID == item.id
-                    ) {
-                        library.selectedMediaItemID = item.id
+                        isSelected: library.selectedMediaItemID == item.id,
+                        select: {
+                            library.selectedMediaItemID = item.id
+                            focusedMediaID = item.id
+                        }
+                    )
+                    .focusable()
+                    .focused($focusedMediaID, equals: item.id)
+                    .onKeyPress(.space) {
+                        guard item.localAssetStatus == .available else { return .ignored }
+                        library.presentQuickLook(item)
+                        return .handled
                     }
                     .contextMenu { itemMenu(item) }
                     .draggable(item.mediaItem.sourceURL.absoluteString)
                 }
             }
-            .padding(20)
+            .padding(16)
         }
     }
 
@@ -131,7 +142,7 @@ struct LibraryBrowserView: View {
             TableColumn("Title") { item in
                 HStack(spacing: 10) {
                     MediaThumbnail(item: item, compact: true)
-                        .frame(width: 72, height: 42)
+                        .frame(width: 64, height: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.mediaItem.displayTitle)
                             .fontWeight(.medium)
@@ -176,7 +187,7 @@ struct LibraryBrowserView: View {
         List(library.items, selection: $library.selectedMediaItemID) { item in
             HStack(spacing: 10) {
                 MediaThumbnail(item: item, compact: true)
-                    .frame(width: 64, height: 36)
+                    .frame(width: 56, height: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.mediaItem.displayTitle)
                         .lineLimit(1)
@@ -192,7 +203,7 @@ struct LibraryBrowserView: View {
                 }
                 Spacer()
                 if item.isFavorite {
-                    Image(systemName: "star.fill").foregroundStyle(.yellow)
+                    Image(systemName: "star.fill").foregroundStyle(.secondary)
                 }
                 LocalStatusLabel(item: item, iconOnly: true)
             }
@@ -210,7 +221,7 @@ struct LibraryBrowserView: View {
             Text(emptyDescription)
         } actions: {
             if library.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button("Add Link") { library.isQuickAddPresented = true }
+                Button("Add Link") { library.presentQuickAdd() }
                     .buttonStyle(.borderedProminent)
                     .tint(VidindirTheme.accent)
             } else {
@@ -227,6 +238,7 @@ struct LibraryBrowserView: View {
         }
         Button("Download on This Mac") { startDownload(item) }
         if item.localAssetStatus == .available {
+            Button("Quick Look") { library.presentQuickLook(item) }
             Button("Reveal in Finder") { library.revealLocalFile(item) }
         }
         Divider()
@@ -294,49 +306,24 @@ struct LibraryBrowserView: View {
         return library.destination.systemImage
     }
 
-    private var scopeExplanation: some View {
-        HStack(spacing: 8) {
-            Image(systemName: library.destination.systemImage)
-                .foregroundStyle(VidindirTheme.accent)
-            Text(scopeDescription)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            Spacer(minLength: 8)
-            if library.currentCollection != nil {
-                Button {
-                    prepareCollectionDownload()
-                } label: {
-                    if isPreparingCollectionDownload {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label("Download Collection", systemImage: "arrow.down.circle")
-                    }
+    private var collectionActions: some View {
+        HStack {
+            Spacer()
+            Button {
+                prepareCollectionDownload()
+            } label: {
+                if isPreparingCollectionDownload {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Label("Download Collection", systemImage: "arrow.down.circle")
                 }
-                .buttonStyle(.bordered)
-                .disabled(isPreparingCollectionDownload)
             }
+            .buttonStyle(.borderless)
+            .disabled(isPreparingCollectionDownload)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
-    }
-
-    private var scopeDescription: String {
-        switch library.destination {
-        case .inbox:
-            "New links waiting to be organized. Every item here is already saved in All Media."
-        case .library:
-            "Every saved link, including items still waiting in Inbox."
-        case .favorites:
-            "A quick view of media you marked as a favorite."
-        case .collection:
-            "A collection organizes links without duplicating their library records."
-        default:
-            "Saved media on this Mac."
-        }
     }
 
     private func prepareCollectionDownload() {
@@ -405,13 +392,13 @@ struct MediaThumbnail: View {
             }
         }
         .aspectRatio(16 / 9, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: compact ? 6 : 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: compact ? 5 : 7, style: .continuous))
     }
 
     private var placeholder: some View {
         Image(systemName: item.mediaItem.sourceType == .youtube ? "play.rectangle" : "film")
             .font(compact ? .body : .largeTitle)
-            .foregroundStyle(VidindirTheme.accent.opacity(0.8))
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -422,47 +409,44 @@ private struct MediaGridCell: View {
 
     var body: some View {
         Button(action: select) {
-            VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 7) {
                 ZStack(alignment: .bottomTrailing) {
                     MediaThumbnail(item: item)
                     if let duration = LibraryBrowserView.duration(item.mediaItem.durationSeconds) {
                         Text(duration)
-                            .font(.caption2.monospacedDigit().weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .background(.thickMaterial, in: Capsule())
-                            .padding(7)
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(.regularMaterial, in: Capsule())
+                            .padding(6)
                     }
                 }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(
+                            isSelected ? VidindirTheme.accent.opacity(0.8) : Color.clear,
+                            lineWidth: 1.5
+                        )
+                }
+
                 Text(item.mediaItem.displayTitle)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.subheadline.weight(.medium))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+
                 HStack(spacing: 5) {
                     Text(item.mediaItem.creator ?? item.mediaItem.sourceType.displayName)
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if item.isFavorite {
-                        Image(systemName: "star.fill").foregroundStyle(.yellow)
+                        Image(systemName: "star.fill")
                     }
                     LocalStatusLabel(item: item, iconOnly: true)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            .padding(10)
-            .background(
-                isSelected ? VidindirTheme.accent.opacity(0.11) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(
-                        isSelected ? VidindirTheme.accent.opacity(0.75) : Color.clear,
-                        lineWidth: 1.5
-                    )
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

@@ -59,6 +59,13 @@ enum LibraryDestination: Hashable, Identifiable {
     }
 }
 
+struct BatchAddResult: Sendable {
+    let addedItems: [LibraryItemSummary]
+    let downloadItems: [LibraryItemSummary]
+    let duplicateCount: Int
+    let failedURLs: [URL]
+}
+
 enum LibraryDisplayMode: String, CaseIterable, Identifiable {
     case grid
     case list
@@ -91,9 +98,23 @@ final class LibraryViewModel: ObservableObject {
             scheduleReload(immediately: false)
         }
     }
+    @Published var sortOrder: LibrarySortOrder = .addedNewest {
+        didSet {
+            guard sortOrder != oldValue else { return }
+            scheduleReload(immediately: true)
+        }
+    }
     @Published var selectedMediaItemID: MediaItemID?
     @Published var selectedDownloadJobID: DownloadJobID?
-    @Published var isQuickAddPresented = false
+    @Published var quickLookPreviewURL: URL?
+    @Published var isQuickAddPresented = false {
+        didSet {
+            if !isQuickAddPresented {
+                quickAddInitialText = ""
+            }
+        }
+    }
+    @Published private(set) var quickAddInitialText = ""
     @Published private(set) var items: [LibraryItemSummary] = []
     @Published private(set) var downloadJobs: [DownloadJob] = []
     @Published private(set) var collections: [Collection] = []
@@ -119,6 +140,7 @@ final class LibraryViewModel: ObservableObject {
     private var didBootstrap = false
     private var loadTask: Task<Void, Never>?
     private var metadataRefreshTask: Task<Void, Never>?
+    private var batchMetadataRefreshTask: Task<Void, Never>?
     private var loadGeneration = UUID()
 
     private static let pageSize = 100
@@ -149,6 +171,7 @@ final class LibraryViewModel: ObservableObject {
     deinit {
         loadTask?.cancel()
         metadataRefreshTask?.cancel()
+        batchMetadataRefreshTask?.cancel()
     }
 
     var isAvailable: Bool {
@@ -213,6 +236,11 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    func presentQuickAdd(initialText: String = "") {
+        quickAddInitialText = initialText
+        isQuickAddPresented = true
+    }
+
     func reload() {
         scheduleReload(immediately: true)
     }
@@ -237,6 +265,7 @@ final class LibraryViewModel: ObservableObject {
                 let page = try await libraryRepository.page(LibraryQuery(
                     scope: scope,
                     searchText: searchText,
+                    sortOrder: sortOrder,
                     limit: Self.pageSize
                 ))
                 guard loadGeneration == generation, !Task.isCancelled else { return }
@@ -248,6 +277,7 @@ final class LibraryViewModel: ObservableObject {
                 let query = DownloadJobQuery(
                     states: states,
                     searchText: searchText,
+                    sortOrder: Self.downloadJobSortOrder(for: selectedDestination),
                     limit: Self.pageSize
                 )
                 async let loadedJobs = downloadRepository.jobs(query)
@@ -287,6 +317,7 @@ final class LibraryViewModel: ObservableObject {
         let generation = loadGeneration
         let selectedDestination = destination
         let selectedSearchText = searchText
+        let selectedSortOrder = sortOrder
         isLoadingMore = true
 
         Task { [weak self] in
@@ -297,12 +328,14 @@ final class LibraryViewModel: ObservableObject {
                     let page = try await libraryRepository.page(LibraryQuery(
                         scope: scope,
                         searchText: selectedSearchText,
+                        sortOrder: selectedSortOrder,
                         limit: Self.pageSize,
                         offset: self.items.count
                     ))
                     guard self.loadGeneration == generation,
                           self.destination == selectedDestination,
-                          self.searchText == selectedSearchText else { return }
+                          self.searchText == selectedSearchText,
+                          self.sortOrder == selectedSortOrder else { return }
                     let existingIDs = Set(self.items.map(\.id))
                     self.items.append(contentsOf: page.items.filter { !existingIDs.contains($0.id) })
                     self.totalCount = page.totalCount
@@ -310,6 +343,7 @@ final class LibraryViewModel: ObservableObject {
                     let query = DownloadJobQuery(
                         states: Self.downloadStates(for: selectedDestination),
                         searchText: selectedSearchText,
+                        sortOrder: Self.downloadJobSortOrder(for: selectedDestination),
                         limit: Self.pageSize,
                         offset: self.downloadJobs.count
                     )
@@ -354,6 +388,7 @@ final class LibraryViewModel: ObservableObject {
             let page = try await libraryRepository.page(LibraryQuery(
                 workspaceID: collection.workspaceID,
                 scope: .collection(collection.id),
+                sortOrder: sortOrder,
                 limit: pageSize,
                 offset: offset
             ))
@@ -406,6 +441,71 @@ final class LibraryViewModel: ObservableObject {
                 selectedMediaItemID = savedItem.id
             }
         }
+        return result
+    }
+
+    func addLinks(
+        _ urls: [URL],
+        destination: SaveDestination
+    ) async -> BatchAddResult {
+        guard let libraryRepository else {
+            return BatchAddResult(
+                addedItems: [],
+                downloadItems: [],
+                duplicateCount: 0,
+                failedURLs: urls
+            )
+        }
+
+        var addedIDs: [MediaItemID] = []
+        var orderedDownloadIDs: [MediaItemID] = []
+        var seenDownloadIDs = Set<MediaItemID>()
+        var duplicateCount = 0
+        var failedURLs: [URL] = []
+
+        for url in urls {
+            do {
+                switch try await libraryRepository.saveLink(SaveLinkCommand(
+                    sourceURL: url,
+                    destination: destination
+                )) {
+                case .saved(let item):
+                    addedIDs.append(item.id)
+                    if seenDownloadIDs.insert(item.id).inserted {
+                        orderedDownloadIDs.append(item.id)
+                    }
+                case .duplicate(let candidates):
+                    duplicateCount += 1
+                    guard let existing = candidates.first?.mediaItem else {
+                        failedURLs.append(url)
+                        continue
+                    }
+                    if seenDownloadIDs.insert(existing.id).inserted {
+                        orderedDownloadIDs.append(existing.id)
+                    }
+                }
+            } catch {
+                failedURLs.append(url)
+            }
+        }
+
+        await refreshCollections()
+        await reloadNow()
+
+        let summaryIDs = Set(addedIDs).union(orderedDownloadIDs)
+        let summaries = (try? await libraryRepository.summaries(
+            mediaItemIDs: summaryIDs,
+            workspaceID: VidindirIdentity.personalWorkspace
+        )) ?? []
+        let summariesByID = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
+
+        let result = BatchAddResult(
+            addedItems: addedIDs.compactMap { summariesByID[$0] },
+            downloadItems: orderedDownloadIDs.compactMap { summariesByID[$0] },
+            duplicateCount: duplicateCount,
+            failedURLs: failedURLs
+        )
+        refreshAddedMetadataInBackground(result.addedItems)
         return result
     }
 
@@ -631,6 +731,41 @@ final class LibraryViewModel: ObservableObject {
         NSWorkspace.shared.open(item.mediaItem.sourceURL)
     }
 
+    func quickLookURL(for item: LibraryItemSummary) async -> URL? {
+        guard let downloadRepository,
+              let assets = try? await downloadRepository.localAssets(mediaItemID: item.id) else {
+            return nil
+        }
+        for asset in assets where asset.status == .available {
+            if let url = LocalAssetVerifier.existingFileURL(for: asset) {
+                return url
+            }
+            _ = try? await downloadRepository.markLocalAssetMissing(id: asset.id)
+        }
+        return nil
+    }
+
+    func presentQuickLook(_ item: LibraryItemSummary) {
+        Task { [weak self] in
+            guard let self else { return }
+            if let url = await self.quickLookURL(for: item) {
+                self.quickLookPreviewURL = url
+            } else {
+                await self.reloadNow()
+                self.alert = AppAlert(
+                    title: "Local file not found",
+                    message: "The library link is safe. Download the file again on this Mac when you need it."
+                )
+            }
+        }
+    }
+
+    func presentQuickLookForSelection() {
+        guard let selectedItem,
+              selectedItem.localAssetStatus == .available else { return }
+        presentQuickLook(selectedItem)
+    }
+
     func revealLocalFile(_ item: LibraryItemSummary) {
         guard let downloadRepository else { return }
         Task { [weak self] in
@@ -741,9 +876,31 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    private func refreshAddedMetadataInBackground(_ items: [LibraryItemSummary]) {
+        guard !items.isEmpty, metadataResolver != nil else { return }
+        let previousTask = batchMetadataRefreshTask
+        batchMetadataRefreshTask = Task { [weak self] in
+            if let previousTask {
+                await previousTask.value
+            }
+            guard !Task.isCancelled, let self else { return }
+            for item in items {
+                guard !Task.isCancelled else { return }
+                await self.resolveAndStoreMetadata(
+                    item,
+                    reportsFailure: false,
+                    reloadAfterUpdate: false
+                )
+            }
+            guard !Task.isCancelled else { return }
+            await self.reloadNow()
+        }
+    }
+
     private func resolveAndStoreMetadata(
         _ item: LibraryItemSummary,
-        reportsFailure: Bool
+        reportsFailure: Bool,
+        reloadAfterUpdate: Bool = true
     ) async {
         guard let libraryRepository,
               let metadataResolver,
@@ -768,7 +925,9 @@ final class LibraryViewModel: ObservableObject {
                     errorCode: (metadata.title ?? media.title) == nil ? "missing_title" : nil
                 )
             ))
-            await reloadNow()
+            if reloadAfterUpdate {
+                await reloadNow()
+            }
         } catch {
             let media = item.mediaItem
             _ = try? await libraryRepository.updateMedia(UpdateMediaCommand(
@@ -785,7 +944,9 @@ final class LibraryViewModel: ObservableObject {
                     errorCode: "metadata_unavailable"
                 )
             ))
-            await reloadNow()
+            if reloadAfterUpdate {
+                await reloadNow()
+            }
             if reportsFailure {
                 alert = AppAlert(
                     title: "Video details are unavailable",
@@ -839,6 +1000,12 @@ final class LibraryViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             await self?.performReload()
         }
+    }
+
+    private static func downloadJobSortOrder(
+        for destination: LibraryDestination
+    ) -> DownloadJobSortOrder {
+        destination == .activeDownloads ? .activeQueue : .newestFirst
     }
 
     private static func downloadStates(

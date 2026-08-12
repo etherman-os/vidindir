@@ -197,7 +197,11 @@ struct LibraryViewModelTests {
                 sourceLabel: "Generic"
             )
         ))
-        try await eventually { model.items.contains { $0.id == saved.id } }
+        try await eventually {
+            model.items.contains { $0.id == saved.id }
+                && model.inboxCount == 1
+                && model.libraryCount == 1
+        }
         let inboxItem = try #require(model.items.first { $0.id == saved.id })
         #expect(model.inboxCount == 1)
         #expect(model.libraryCount == 1)
@@ -272,6 +276,274 @@ struct LibraryViewModelTests {
 
         #expect(allItems.count == 501)
         #expect(Set(allItems.map(\.id)).count == 501)
+    }
+
+    @Test @MainActor func quickAddPresentationCarriesAndClearsExplicitInput() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let model = fixture.makeModel()
+
+        model.presentQuickAdd(initialText: "https://example.com/one\nhttps://example.com/two")
+
+        #expect(model.isQuickAddPresented)
+        #expect(model.quickAddInitialText == "https://example.com/one\nhttps://example.com/two")
+
+        model.isQuickAddPresented = false
+        #expect(model.quickAddInitialText.isEmpty)
+    }
+
+    @Test @MainActor func sortOrderChangesRepositoryBackedLibraryOrdering() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let charlie = try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/charlie")!,
+            destination: .libraryOnly
+        )))
+        let alpha = try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/alpha")!,
+            destination: .libraryOnly
+        )))
+        let bravo = try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/bravo")!,
+            destination: .libraryOnly
+        )))
+        try await fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [1_000, alpha.id.description]
+            )
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [3_000, bravo.id.description]
+            )
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [2_000, charlie.id.description]
+            )
+        }
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        model.destination = .library
+
+        model.sortOrder = .addedOldest
+        await model.reloadNow()
+        #expect(model.items.map(\.id) == [alpha.id, charlie.id, bravo.id])
+
+        model.sortOrder = .titleDescending
+        await model.reloadNow()
+        #expect(model.items.map(\.id) == [charlie.id, bravo.id, alpha.id])
+    }
+
+    @Test @MainActor func batchAddSkipsLibraryDuplicatesButKeepsThemDownloadable() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let existingURL = URL(string: "https://example.com/already-saved")!
+        let existing = try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: existingURL,
+            destination: .libraryOnly
+        )))
+        let firstURL = URL(string: "https://example.com/batch-new-one")!
+        let secondURL = URL(string: "https://example.com/batch-new-two")!
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        await model.bootstrapNow()
+
+        let result = await model.addLinks(
+            [firstURL, existingURL, secondURL],
+            destination: .inbox
+        )
+
+        #expect(result.addedItems.map(\.mediaItem.sourceURL) == [firstURL, secondURL])
+        #expect(result.duplicateCount == 1)
+        #expect(result.failedURLs.isEmpty)
+        #expect(result.downloadItems.map(\.mediaItem.sourceURL) == [firstURL, existingURL, secondURL])
+        #expect(result.downloadItems.map(\.id).contains(existing.id))
+        #expect(try await fixture.libraryRepository.page(LibraryQuery(scope: .inbox)).totalCount == 2)
+        #expect(try await fixture.libraryRepository.page(LibraryQuery(scope: .all)).totalCount == 3)
+    }
+
+    @Test @MainActor func batchAddResolvesNewMetadataInBackground() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let firstURL = URL(string: "https://example.com/batch-metadata-one")!
+        let secondURL = URL(string: "https://example.com/batch-metadata-two")!
+        let model = fixture.makeModel()
+        await model.bootstrapNow()
+
+        let result = await model.addLinks(
+            [firstURL, secondURL],
+            destination: .libraryOnly
+        )
+        #expect(result.addedItems.count == 2)
+
+        try await eventually {
+            guard let page = try? await fixture.libraryRepository.page(LibraryQuery(scope: .all)) else {
+                return false
+            }
+            let items = page.items.filter { [firstURL, secondURL].contains($0.mediaItem.sourceURL) }
+            return items.count == 2
+                && items.allSatisfy { $0.mediaItem.title == "Resolved Video" }
+                && items.allSatisfy { $0.mediaItem.metadataStatus == .resolved }
+        }
+    }
+
+    @Test @MainActor func consecutiveBatchesKeepEarlierMetadataResolutionQueued() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let urls = [
+            URL(string: "https://example.com/queued-metadata-one")!,
+            URL(string: "https://example.com/queued-metadata-two")!,
+            URL(string: "https://example.com/queued-metadata-three")!,
+        ]
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: DelayedMetadataResolver()
+        )
+        await model.bootstrapNow()
+
+        _ = await model.addLinks(Array(urls.prefix(2)), destination: .libraryOnly)
+        _ = await model.addLinks([urls[2]], destination: .libraryOnly)
+
+        try await eventually {
+            guard let page = try? await fixture.libraryRepository.page(LibraryQuery(scope: .all)) else {
+                return false
+            }
+            let items = page.items.filter { urls.contains($0.mediaItem.sourceURL) }
+            return items.count == 3
+                && items.allSatisfy { $0.mediaItem.title == "Delayed Video" }
+                && items.allSatisfy { $0.mediaItem.metadataStatus == .resolved }
+        }
+    }
+
+    @Test @MainActor func quickLookUsesOnlyAnExistingLocalAsset() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let saved = try savedItem(await fixture.makeModel().addLink(
+            URL(string: "https://example.com/quick-look")!,
+            destination: .libraryOnly
+        ))
+        let fileURL = fixture.rootURL.appendingPathComponent("preview.mp4")
+        try Data([0x01]).write(to: fileURL)
+        var job = try await fixture.downloadRepository.createJob(CreateDownloadJobCommand(
+            mediaItemID: saved.id,
+            mediaKind: .video,
+            container: "mp4",
+            requestJSON: #"{"format":"video"}"#,
+            destinationBookmark: nil,
+            destinationPath: fixture.rootURL.path
+        ))
+        for transition in [
+            DownloadJobState.resolving,
+            .ready,
+            .queued,
+            .downloading,
+            .postProcessing,
+        ] {
+            job = try await fixture.downloadRepository.transitionJob(
+                id: job.id,
+                from: job.state,
+                to: transition
+            )
+        }
+        _ = try await fixture.downloadRepository.completeJob(
+            id: job.id,
+            asset: try VerifiedLocalAsset(
+                fileBookmark: Data("bookmark".utf8),
+                absolutePath: fileURL.path,
+                fileSizeBytes: 1,
+                container: "mp4"
+            )
+        )
+
+        let model = fixture.makeModel()
+        await model.bootstrapNow()
+        model.destination = .library
+        await model.reloadNow()
+        let item = try #require(model.items.first { $0.id == saved.id })
+
+        #expect(await model.quickLookURL(for: item) == fileURL.standardizedFileURL)
+        model.selectedMediaItemID = item.id
+        model.presentQuickLookForSelection()
+        try await eventually {
+            model.quickLookPreviewURL == fileURL.standardizedFileURL
+        }
+
+        try FileManager.default.removeItem(at: fileURL)
+        #expect(await model.quickLookURL(for: item) == nil)
+        let assets = try await fixture.downloadRepository.localAssets(mediaItemID: saved.id)
+        #expect(assets.first?.status == .missing)
+    }
+
+    @Test @MainActor func activeDownloadsFollowExecutionQueueInsteadOfNewestHistoryOrder() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        var media: [MediaItem] = []
+        for index in 0..<4 {
+            media.append(try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+                sourceURL: URL(string: "https://example.com/active-queue-\(index)")!,
+                destination: .libraryOnly
+            ))))
+        }
+        var jobs: [DownloadJob] = []
+        for item in media {
+            var job = try await fixture.downloadRepository.createJob(CreateDownloadJobCommand(
+                mediaItemID: item.id,
+                mediaKind: .video,
+                container: "mp4",
+                requestJSON: #"{"format":"video"}"#,
+                destinationBookmark: nil,
+                destinationPath: fixture.rootURL.path
+            ))
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .created, to: .resolving)
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .resolving, to: .ready)
+            job = try await fixture.downloadRepository.transitionJob(id: job.id, from: .ready, to: .queued)
+            jobs.append(job)
+        }
+        let current = try await fixture.downloadRepository.transitionJob(
+            id: jobs[0].id,
+            from: .queued,
+            to: .downloading
+        )
+        let paused = try await fixture.downloadRepository.transitionJob(
+            id: jobs[3].id,
+            from: .queued,
+            to: .paused
+        )
+        let jobIDs = jobs.map(\.id)
+        try await fixture.database.pool.write { db in
+            let createdTimes: [Int64] = [4_000, 1_000, 3_000, 2_000]
+            for (jobID, timestamp) in zip(jobIDs, createdTimes) {
+                try db.execute(
+                    sql: "UPDATE download_jobs SET created_at = ? WHERE id = ?",
+                    arguments: [timestamp, jobID.description]
+                )
+            }
+        }
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        model.destination = .activeDownloads
+
+        await model.reloadNow()
+
+        #expect(model.downloadJobs.map(\.id) == [current.id, jobs[1].id, jobs[2].id, paused.id])
     }
 
     @Test @MainActor func downloadCountsSeparateActiveCompletedAndAttentionStates() async throws {
@@ -437,6 +709,19 @@ private struct FixedMetadataResolver: MediaMetadataResolving {
     func resolve(_ sourceURL: URL) async throws -> ResolvedMediaMetadata {
         ResolvedMediaMetadata(
             title: "Resolved Video",
+            creator: "Etherman",
+            durationSeconds: 95,
+            thumbnailURL: URL(string: "https://example.com/thumb.jpg"),
+            sourceLabel: "Generic"
+        )
+    }
+}
+
+private struct DelayedMetadataResolver: MediaMetadataResolving {
+    func resolve(_ sourceURL: URL) async throws -> ResolvedMediaMetadata {
+        try await Task.sleep(for: .milliseconds(100))
+        return ResolvedMediaMetadata(
+            title: "Delayed Video",
             creator: "Etherman",
             durationSeconds: 95,
             thumbnailURL: URL(string: "https://example.com/thumb.jpg"),

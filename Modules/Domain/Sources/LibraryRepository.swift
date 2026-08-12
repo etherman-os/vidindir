@@ -157,10 +157,18 @@ public enum LibraryScope: Equatable, Hashable, Sendable {
     case collection(CollectionID)
 }
 
+public enum LibrarySortOrder: String, CaseIterable, Equatable, Hashable, Sendable {
+    case addedNewest
+    case addedOldest
+    case titleAscending
+    case titleDescending
+}
+
 public struct LibraryQuery: Equatable, Hashable, Sendable {
     public let workspaceID: WorkspaceID
     public let scope: LibraryScope
     public let searchText: String?
+    public let sortOrder: LibrarySortOrder
     public let limit: Int
     public let offset: Int
 
@@ -168,12 +176,14 @@ public struct LibraryQuery: Equatable, Hashable, Sendable {
         workspaceID: WorkspaceID = VidindirIdentity.personalWorkspace,
         scope: LibraryScope = .all,
         searchText: String? = nil,
+        sortOrder: LibrarySortOrder = .addedNewest,
         limit: Int = 100,
         offset: Int = 0
     ) {
         self.workspaceID = workspaceID
         self.scope = scope
         self.searchText = searchText
+        self.sortOrder = sortOrder
         self.limit = limit
         self.offset = offset
     }
