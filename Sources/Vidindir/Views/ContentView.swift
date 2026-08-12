@@ -8,6 +8,7 @@ struct ContentView: View {
     @ObservedObject var library: LibraryViewModel
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("library.displayMode") private var displayMode: LibraryDisplayMode = .grid
+    @AppStorage("library.sortOrder") private var sortOrder: LibrarySortOrder = .addedNewest
     @AppStorage("integrations.clipboardSuggestions") private var clipboardSuggestions = AppPreferenceDefaults.clipboardSuggestions
     @AppStorage("layout.inspectorPreferred") private var inspectorPreferred = true
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
@@ -95,9 +96,13 @@ struct ContentView: View {
             )
         }
         .onAppear {
+            library.sortOrder = sortOrder
             model.bootstrap()
             library.bootstrap()
             inspectClipboardIfNeeded()
+        }
+        .onChange(of: sortOrder) { _, value in
+            library.sortOrder = value
         }
         .onChange(of: model.phase) {
             library.reload()
@@ -166,6 +171,12 @@ struct ContentView: View {
                             }
                         }
                         Divider()
+                        Picker("Sort By", selection: $sortOrder) {
+                            ForEach(LibrarySortOrder.allCases, id: \.self) { order in
+                                Text(order.menuTitle).tag(order)
+                            }
+                        }
+                        Divider()
                     }
 
                     Button("Show Inspector…", systemImage: "sidebar.right") {
@@ -211,6 +222,19 @@ struct ContentView: View {
                     }
                     .help("Change View")
                 }
+            }
+
+            if windowWidth >= 760, !library.isDownloadDestination {
+                Menu {
+                    Picker("Sort By", selection: $sortOrder) {
+                        ForEach(LibrarySortOrder.allCases, id: \.self) { order in
+                            Text(order.menuTitle).tag(order)
+                        }
+                    }
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                }
+                .help("Sort Library")
             }
 
             Button {
@@ -453,6 +477,17 @@ struct ContentView: View {
     private static func isHTTPURL(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
         return (scheme == "http" || scheme == "https") && url.host != nil
+    }
+}
+
+private extension LibrarySortOrder {
+    var menuTitle: String {
+        switch self {
+        case .addedNewest: "Date Added — Newest First"
+        case .addedOldest: "Date Added — Oldest First"
+        case .titleAscending: "Title — A to Z"
+        case .titleDescending: "Title — Z to A"
+        }
     }
 }
 

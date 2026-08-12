@@ -98,6 +98,12 @@ final class LibraryViewModel: ObservableObject {
             scheduleReload(immediately: false)
         }
     }
+    @Published var sortOrder: LibrarySortOrder = .addedNewest {
+        didSet {
+            guard sortOrder != oldValue else { return }
+            scheduleReload(immediately: true)
+        }
+    }
     @Published var selectedMediaItemID: MediaItemID?
     @Published var selectedDownloadJobID: DownloadJobID?
     @Published var quickLookPreviewURL: URL?
@@ -247,6 +253,7 @@ final class LibraryViewModel: ObservableObject {
                 let page = try await libraryRepository.page(LibraryQuery(
                     scope: scope,
                     searchText: searchText,
+                    sortOrder: sortOrder,
                     limit: Self.pageSize
                 ))
                 guard loadGeneration == generation, !Task.isCancelled else { return }
@@ -297,6 +304,7 @@ final class LibraryViewModel: ObservableObject {
         let generation = loadGeneration
         let selectedDestination = destination
         let selectedSearchText = searchText
+        let selectedSortOrder = sortOrder
         isLoadingMore = true
 
         Task { [weak self] in
@@ -307,12 +315,14 @@ final class LibraryViewModel: ObservableObject {
                     let page = try await libraryRepository.page(LibraryQuery(
                         scope: scope,
                         searchText: selectedSearchText,
+                        sortOrder: selectedSortOrder,
                         limit: Self.pageSize,
                         offset: self.items.count
                     ))
                     guard self.loadGeneration == generation,
                           self.destination == selectedDestination,
-                          self.searchText == selectedSearchText else { return }
+                          self.searchText == selectedSearchText,
+                          self.sortOrder == selectedSortOrder else { return }
                     let existingIDs = Set(self.items.map(\.id))
                     self.items.append(contentsOf: page.items.filter { !existingIDs.contains($0.id) })
                     self.totalCount = page.totalCount
@@ -364,6 +374,7 @@ final class LibraryViewModel: ObservableObject {
             let page = try await libraryRepository.page(LibraryQuery(
                 workspaceID: collection.workspaceID,
                 scope: .collection(collection.id),
+                sortOrder: sortOrder,
                 limit: pageSize,
                 offset: offset
             ))

@@ -40,6 +40,42 @@ struct LibraryRepositoryTests {
         #expect(journalCount == 6)
     }
 
+    @Test func libraryQueriesSupportStableDateAndTitleSorting() async throws {
+        let fixture = try PersistenceFixture()
+        defer { fixture.remove() }
+        let charlie = try await fixture.makeMediaItem(source: "https://example.com/charlie")
+        let alpha = try await fixture.makeMediaItem(source: "https://example.com/alpha")
+        let bravo = try await fixture.makeMediaItem(source: "https://example.com/bravo")
+
+        try await fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [1_000, alpha.id.description]
+            )
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [3_000, bravo.id.description]
+            )
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [2_000, charlie.id.description]
+            )
+        }
+
+        #expect(try await fixture.repository.page(
+            LibraryQuery(sortOrder: .addedNewest)
+        ).items.map(\.id) == [bravo.id, charlie.id, alpha.id])
+        #expect(try await fixture.repository.page(
+            LibraryQuery(sortOrder: .addedOldest)
+        ).items.map(\.id) == [alpha.id, charlie.id, bravo.id])
+        #expect(try await fixture.repository.page(
+            LibraryQuery(sortOrder: .titleAscending)
+        ).items.map(\.id) == [alpha.id, bravo.id, charlie.id])
+        #expect(try await fixture.repository.page(
+            LibraryQuery(sortOrder: .titleDescending)
+        ).items.map(\.id) == [charlie.id, bravo.id, alpha.id])
+    }
+
     @Test func collectionsFavoritesMetadataAndSearchStayTransactionallyAligned() async throws {
         let fixture = try PersistenceFixture()
         defer { fixture.remove() }

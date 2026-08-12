@@ -278,6 +278,53 @@ struct LibraryViewModelTests {
         #expect(Set(allItems.map(\.id)).count == 501)
     }
 
+    @Test @MainActor func sortOrderChangesRepositoryBackedLibraryOrdering() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let charlie = try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/charlie")!,
+            destination: .libraryOnly
+        )))
+        let alpha = try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/alpha")!,
+            destination: .libraryOnly
+        )))
+        let bravo = try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: URL(string: "https://example.com/bravo")!,
+            destination: .libraryOnly
+        )))
+        try await fixture.database.pool.write { db in
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [1_000, alpha.id.description]
+            )
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [3_000, bravo.id.description]
+            )
+            try db.execute(
+                sql: "UPDATE media_items SET created_at = ? WHERE id = ?",
+                arguments: [2_000, charlie.id.description]
+            )
+        }
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        model.destination = .library
+
+        model.sortOrder = .addedOldest
+        await model.reloadNow()
+        #expect(model.items.map(\.id) == [alpha.id, charlie.id, bravo.id])
+
+        model.sortOrder = .titleDescending
+        await model.reloadNow()
+        #expect(model.items.map(\.id) == [charlie.id, bravo.id, alpha.id])
+    }
+
     @Test @MainActor func batchAddSkipsLibraryDuplicatesButKeepsThemDownloadable() async throws {
         let fixture = try LibraryModelFixture()
         defer { fixture.remove() }
