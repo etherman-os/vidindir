@@ -12,6 +12,7 @@ struct LibraryBrowserView: View {
     @State private var pendingCollectionItems: [LibraryItemSummary] = []
     @State private var isPreparingCollectionDownload = false
     @State private var showsCollectionDownloadConfirmation = false
+    @FocusState private var focusedMediaID: MediaItemID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -115,9 +116,18 @@ struct LibraryBrowserView: View {
                 ForEach(library.items) { item in
                     MediaGridCell(
                         item: item,
-                        isSelected: library.selectedMediaItemID == item.id
-                    ) {
-                        library.selectedMediaItemID = item.id
+                        isSelected: library.selectedMediaItemID == item.id,
+                        select: {
+                            library.selectedMediaItemID = item.id
+                            focusedMediaID = item.id
+                        }
+                    )
+                    .focusable()
+                    .focused($focusedMediaID, equals: item.id)
+                    .onKeyPress(.space) {
+                        guard item.localAssetStatus == .available else { return .ignored }
+                        library.presentQuickLook(item)
+                        return .handled
                     }
                     .contextMenu { itemMenu(item) }
                     .draggable(item.mediaItem.sourceURL.absoluteString)
@@ -228,6 +238,7 @@ struct LibraryBrowserView: View {
         }
         Button("Download on This Mac") { startDownload(item) }
         if item.localAssetStatus == .available {
+            Button("Quick Look") { library.presentQuickLook(item) }
             Button("Reveal in Finder") { library.revealLocalFile(item) }
         }
         Divider()

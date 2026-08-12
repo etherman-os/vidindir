@@ -1,4 +1,5 @@
 import AppKit
+import QuickLook
 import SwiftUI
 import VidindirDomain
 
@@ -33,6 +34,13 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 176, ideal: 205, max: 248)
         } detail: {
             mainContent
+                .onKeyPress(.space) {
+                    guard library.selectedItem?.localAssetStatus == .available else {
+                        return .ignored
+                    }
+                    library.presentQuickLookForSelection()
+                    return .handled
+                }
                 .navigationTitle(library.destinationTitle)
                 .modifier(
                     AdaptiveToolbarSearch(
@@ -71,6 +79,7 @@ struct ContentView: View {
         .sheet(isPresented: $model.showsResponsibleUse) {
             ResponsibleUseView(accept: model.acceptResponsibleUse)
         }
+        .quickLookPreview($library.quickLookPreviewURL)
         .alert(item: $model.alert) { alert in
             Alert(
                 title: Text(alert.title),

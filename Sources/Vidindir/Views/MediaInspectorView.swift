@@ -90,6 +90,12 @@ struct MediaInspectorView: View {
 
                 if item.localAssetStatus == .available {
                     Button {
+                        library.presentQuickLook(item)
+                    } label: {
+                        Label("Quick Look", systemImage: "eye")
+                    }
+
+                    Button {
                         library.revealLocalFile(item)
                     } label: {
                         Label("Reveal in Finder", systemImage: "folder")

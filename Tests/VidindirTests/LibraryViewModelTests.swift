@@ -274,6 +274,65 @@ struct LibraryViewModelTests {
         #expect(Set(allItems.map(\.id)).count == 501)
     }
 
+    @Test @MainActor func quickLookUsesOnlyAnExistingLocalAsset() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let saved = try savedItem(await fixture.makeModel().addLink(
+            URL(string: "https://example.com/quick-look")!,
+            destination: .libraryOnly
+        ))
+        let fileURL = fixture.rootURL.appendingPathComponent("preview.mp4")
+        try Data([0x01]).write(to: fileURL)
+        var job = try await fixture.downloadRepository.createJob(CreateDownloadJobCommand(
+            mediaItemID: saved.id,
+            mediaKind: .video,
+            container: "mp4",
+            requestJSON: #"{"format":"video"}"#,
+            destinationBookmark: nil,
+            destinationPath: fixture.rootURL.path
+        ))
+        for transition in [
+            DownloadJobState.resolving,
+            .ready,
+            .queued,
+            .downloading,
+            .postProcessing,
+        ] {
+            job = try await fixture.downloadRepository.transitionJob(
+                id: job.id,
+                from: job.state,
+                to: transition
+            )
+        }
+        _ = try await fixture.downloadRepository.completeJob(
+            id: job.id,
+            asset: try VerifiedLocalAsset(
+                fileBookmark: Data("bookmark".utf8),
+                absolutePath: fileURL.path,
+                fileSizeBytes: 1,
+                container: "mp4"
+            )
+        )
+
+        let model = fixture.makeModel()
+        await model.bootstrapNow()
+        model.destination = .library
+        await model.reloadNow()
+        let item = try #require(model.items.first { $0.id == saved.id })
+
+        #expect(await model.quickLookURL(for: item) == fileURL.standardizedFileURL)
+        model.selectedMediaItemID = item.id
+        model.presentQuickLookForSelection()
+        try await eventually {
+            model.quickLookPreviewURL == fileURL.standardizedFileURL
+        }
+
+        try FileManager.default.removeItem(at: fileURL)
+        #expect(await model.quickLookURL(for: item) == nil)
+        let assets = try await fixture.downloadRepository.localAssets(mediaItemID: saved.id)
+        #expect(assets.first?.status == .missing)
+    }
+
     @Test @MainActor func downloadCountsSeparateActiveCompletedAndAttentionStates() async throws {
         let fixture = try LibraryModelFixture()
         defer { fixture.remove() }

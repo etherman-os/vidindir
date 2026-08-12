@@ -93,6 +93,7 @@ final class LibraryViewModel: ObservableObject {
     }
     @Published var selectedMediaItemID: MediaItemID?
     @Published var selectedDownloadJobID: DownloadJobID?
+    @Published var quickLookPreviewURL: URL?
     @Published var isQuickAddPresented = false
     @Published private(set) var items: [LibraryItemSummary] = []
     @Published private(set) var downloadJobs: [DownloadJob] = []
@@ -629,6 +630,41 @@ final class LibraryViewModel: ObservableObject {
 
     func openSource(_ item: LibraryItemSummary) {
         NSWorkspace.shared.open(item.mediaItem.sourceURL)
+    }
+
+    func quickLookURL(for item: LibraryItemSummary) async -> URL? {
+        guard let downloadRepository,
+              let assets = try? await downloadRepository.localAssets(mediaItemID: item.id) else {
+            return nil
+        }
+        for asset in assets where asset.status == .available {
+            if let url = LocalAssetVerifier.existingFileURL(for: asset) {
+                return url
+            }
+            _ = try? await downloadRepository.markLocalAssetMissing(id: asset.id)
+        }
+        return nil
+    }
+
+    func presentQuickLook(_ item: LibraryItemSummary) {
+        Task { [weak self] in
+            guard let self else { return }
+            if let url = await self.quickLookURL(for: item) {
+                self.quickLookPreviewURL = url
+            } else {
+                await self.reloadNow()
+                self.alert = AppAlert(
+                    title: "Local file not found",
+                    message: "The library link is safe. Download the file again on this Mac when you need it."
+                )
+            }
+        }
+    }
+
+    func presentQuickLookForSelection() {
+        guard let selectedItem,
+              selectedItem.localAssetStatus == .available else { return }
+        presentQuickLook(selectedItem)
     }
 
     func revealLocalFile(_ item: LibraryItemSummary) {
