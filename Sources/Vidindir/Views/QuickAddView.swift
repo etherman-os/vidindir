@@ -26,21 +26,14 @@ struct QuickAddView: View {
     @FocusState private var linkIsFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(spacing: 12) {
-                VidindirMark(size: 38)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Add Media")
-                        .font(.title2.weight(.semibold))
-                    Text("Save a media link to your local library.")
-                        .foregroundStyle(.secondary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Media")
+                .font(.headline)
 
-            VStack(alignment: .leading, spacing: 7) {
-                TextField("Paste a video link…", text: $linkText)
+            VStack(alignment: .leading, spacing: 6) {
+                TextField("Paste a media link…", text: $linkText)
                     .textFieldStyle(.roundedBorder)
-                    .font(.body)
+                    .controlSize(.large)
                     .focused($linkIsFocused)
                     .onSubmit { submit(allowDuplicate: false) }
 
@@ -59,86 +52,70 @@ struct QuickAddView: View {
                 duplicateNotice
             }
 
-            Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 13) {
-                GridRow {
-                    Text("Save to")
-                        .foregroundStyle(.secondary)
-                    Picker("Save to", selection: $destination) {
-                        Label("Inbox — organize later", systemImage: "tray")
-                            .tag(SaveDestination.inbox)
-                        Label("All Media — skip Inbox", systemImage: "rectangle.stack")
-                            .tag(SaveDestination.libraryOnly)
-                        if !userCollections.isEmpty {
-                            Divider()
-                            ForEach(userCollections) { collection in
-                                Label(collection.name, systemImage: "folder")
-                                    .tag(SaveDestination.collection(collection.id))
-                            }
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            Divider()
 
-                GridRow {
-                    Color.clear.frame(width: 1, height: 1)
-                    Text(destinationExplanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                GridRow {
-                    Text("Action")
-                        .foregroundStyle(.secondary)
-                    Picker("Action", selection: $action) {
-                        ForEach(Action.allCases) { value in
-                            Text(value.title).tag(value)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                }
-
-                if action == .downloadNow {
-                    GridRow {
-                        Text("Format")
-                            .foregroundStyle(.secondary)
-                        Picker("Format", selection: formatBinding) {
-                            Label("Video", systemImage: "film").tag(DownloadFormat.mp4)
-                            Label("Audio", systemImage: "waveform").tag(DownloadFormat.mp3)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                    }
-
-                    if download.selectedFormat == .mp4 {
-                        GridRow {
-                            Text("Quality")
-                                .foregroundStyle(.secondary)
-                            Picker("Quality", selection: qualityBinding) {
-                                ForEach(DownloadQuality.allCases) { quality in
-                                    Text(quality.displayName).tag(quality)
+            Form {
+                LabeledContent("Save to") {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Picker("Save to", selection: $destination) {
+                            Label("Inbox — organize later", systemImage: "tray")
+                                .tag(SaveDestination.inbox)
+                            Label("All Media — skip Inbox", systemImage: "rectangle.stack")
+                                .tag(SaveDestination.libraryOnly)
+                            if !userCollections.isEmpty {
+                                Divider()
+                                ForEach(userCollections) { collection in
+                                    Label(collection.name, systemImage: "folder")
+                                        .tag(SaveDestination.collection(collection.id))
                                 }
                             }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
                         }
+                        .labelsHidden()
+
+                        Text(destinationExplanation)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Picker("Action", selection: $action) {
+                    ForEach(Action.allCases) { value in
+                        Text(value.title).tag(value)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if action == .downloadNow {
+                    Picker("Format", selection: formatBinding) {
+                        Label("Video", systemImage: "film").tag(DownloadFormat.mp4)
+                        Label("Audio", systemImage: "waveform").tag(DownloadFormat.mp3)
+                    }
+                    .pickerStyle(.segmented)
+
+                    if download.selectedFormat == .mp4 {
+                        Picker("Quality", selection: qualityBinding) {
+                            ForEach(DownloadQuality.allCases) { quality in
+                                Text(quality.displayName).tag(quality)
+                            }
+                        }
+                        .pickerStyle(.menu)
                     }
 
-                    GridRow {
-                        Text("Save file to")
-                            .foregroundStyle(.secondary)
-                        HStack {
+                    LabeledContent("Save file to") {
+                        HStack(spacing: 8) {
                             Image(systemName: "folder")
+                                .foregroundStyle(.secondary)
                             Text(download.destinationDirectory.lastPathComponent)
                                 .lineLimit(1)
-                            Spacer()
                             Button("Choose…", action: download.chooseDestinationDirectory)
                         }
                     }
                 }
             }
+            .formStyle(.columns)
+
+            Divider()
 
             HStack {
                 if action == .downloadNow, !download.engineStatus.isReady {
@@ -164,8 +141,8 @@ struct QuickAddView: View {
                 .disabled(validURL == nil || isWorking)
             }
         }
-        .padding(24)
-        .frame(width: 570)
+        .padding(20)
+        .frame(width: 540)
         .onAppear {
             if linkText.isEmpty, !initialLink.isEmpty {
                 linkText = initialLink
@@ -182,15 +159,12 @@ struct QuickAddView: View {
     }
 
     private var duplicateNotice: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Label("Already in your library", systemImage: "rectangle.on.rectangle")
-                .font(.headline)
-            if let first = duplicateCandidates.first {
-                Text(first.mediaItem.displayTitle)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            HStack {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label("Already in your library", systemImage: "rectangle.on.rectangle")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.orange)
+                Spacer()
                 Button("Open Existing") {
                     if let first = duplicateCandidates.first {
                         library.destination = .library
@@ -198,17 +172,24 @@ struct QuickAddView: View {
                     }
                     close()
                 }
+                .buttonStyle(.borderless)
                 Button("Add Anyway") { submit(allowDuplicate: true) }
+                    .buttonStyle(.borderless)
+            }
+            if let first = duplicateCandidates.first {
+                Text(first.mediaItem.displayTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
         }
-        .padding(13)
-        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.vertical, 2)
     }
 
     private var metadataPreview: some View {
-        HStack(spacing: 13) {
+        HStack(spacing: 11) {
             ZStack {
-                RoundedRectangle(cornerRadius: 9)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color.secondary.opacity(0.08))
                 if let thumbnailURL = resolvedMetadata?.thumbnailURL {
                     AsyncImage(url: thumbnailURL) { phase in
@@ -216,23 +197,23 @@ struct QuickAddView: View {
                             image.resizable().scaledToFill()
                         } else {
                             Image(systemName: "play.rectangle")
-                                .foregroundStyle(VidindirTheme.accent)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 } else if isResolvingMetadata {
                     ProgressView().controlSize(.small)
                 } else {
                     Image(systemName: "play.rectangle")
-                        .foregroundStyle(VidindirTheme.accent)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 112, height: 63)
-            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .frame(width: 96, height: 54)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 if let metadata = resolvedMetadata {
                     Text(metadata.title ?? "Video details unavailable")
-                        .font(.headline)
+                        .font(.subheadline.weight(.medium))
                         .lineLimit(2)
                     HStack(spacing: 5) {
                         if let creator = metadata.creator { Text(creator) }
@@ -260,8 +241,6 @@ struct QuickAddView: View {
             }
             Spacer()
         }
-        .padding(11)
-        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 11))
     }
 
     private var userCollections: [Collection] {
