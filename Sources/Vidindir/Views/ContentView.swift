@@ -7,7 +7,7 @@ struct ContentView: View {
     @ObservedObject var library: LibraryViewModel
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("library.displayMode") private var displayMode: LibraryDisplayMode = .grid
-    @AppStorage("integrations.clipboardSuggestions") private var clipboardSuggestions = true
+    @AppStorage("integrations.clipboardSuggestions") private var clipboardSuggestions = AppPreferenceDefaults.clipboardSuggestions
     @AppStorage("layout.inspectorPreferred") private var inspectorPreferred = true
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var windowWidth: CGFloat = 0
@@ -59,7 +59,15 @@ struct ContentView: View {
                     }
             }
         }
-        .overlay { transientPanelOverlay }
+        .overlay { compactInspectorOverlay }
+        .sheet(isPresented: $library.isQuickAddPresented) {
+            QuickAddView(
+                library: library,
+                download: model,
+                initialLink: quickAddInitialLink,
+                close: { library.isQuickAddPresented = false }
+            )
+        }
         .sheet(isPresented: $model.showsResponsibleUse) {
             ResponsibleUseView(accept: model.acceptResponsibleUse)
         }
@@ -155,9 +163,6 @@ struct ContentView: View {
                         toggleInspector()
                     }
                     .disabled(!hasInspectorContent)
-
-                    Divider()
-                    Label(engineMenuTitle, systemImage: engineMenuSymbol)
                 } label: {
                     Label("View Options", systemImage: "ellipsis.circle")
                 }
@@ -217,7 +222,6 @@ struct ContentView: View {
                 .help(isInspectorVisible ? "Hide Inspector" : "Show Inspector")
             }
         }
-
     }
 
     private var inspectorBinding: Binding<Bool> {
@@ -243,16 +247,6 @@ struct ContentView: View {
 
     private var hasInspectorContent: Bool {
         library.selectedItem != nil || library.selectedJob != nil
-    }
-
-    private var engineMenuTitle: String {
-        if model.isCheckingEngineUpdates { return "Engine update in progress" }
-        return model.engineStatus.isReady ? "Download engine ready" : "Engine setup required"
-    }
-
-    private var engineMenuSymbol: String {
-        if model.isCheckingEngineUpdates { return "arrow.triangle.2.circlepath" }
-        return model.engineStatus.isReady ? "checkmark.circle.fill" : "wrench.and.screwdriver"
     }
 
     private func toggleInspector() {
@@ -322,45 +316,31 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var transientPanelOverlay: some View {
-        if library.isQuickAddPresented || compactInspectorPresented {
+    private var compactInspectorOverlay: some View {
+        if compactInspectorPresented {
             GeometryReader { proxy in
                 ZStack(alignment: .topTrailing) {
                     Color.black.opacity(0.001)
                         .contentShape(Rectangle())
-                        .onTapGesture { dismissTransientPanels() }
+                        .onTapGesture { compactInspectorPresented = false }
 
-                    Group {
-                        if library.isQuickAddPresented {
-                            QuickAddView(
-                                library: library,
-                                download: model,
-                                initialLink: quickAddInitialLink,
-                                close: dismissTransientPanels
-                            )
-                        } else {
-                            MediaInspectorView(library: library, startDownload: startDownload)
-                                .frame(
-                                    width: min(360, max(320, proxy.size.width - 32)),
-                                    height: min(560, max(360, proxy.size.height - 80))
-                                )
+                    MediaInspectorView(library: library, startDownload: startDownload)
+                        .frame(
+                            width: min(360, max(320, proxy.size.width - 32)),
+                            height: min(560, max(360, proxy.size.height - 80))
+                        )
+                        .background(.regularMaterial)
+                        .overlay {
+                            Rectangle()
+                                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
                         }
-                    }
-                    .background(
-                        .regularMaterial,
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.11))
-                    }
-                    .shadow(color: .black.opacity(0.22), radius: 22, y: 10)
-                    .padding(.top, 50)
-                    .padding(.trailing, 18)
-                    .onExitCommand { dismissTransientPanels() }
+                        .shadow(color: .black.opacity(0.16), radius: 18, y: 8)
+                        .padding(.top, 50)
+                        .padding(.trailing, 18)
+                        .onExitCommand { compactInspectorPresented = false }
                 }
             }
-            .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .topTrailing)))
+            .transition(.opacity)
             .zIndex(20)
         }
     }
@@ -434,8 +414,6 @@ struct ContentView: View {
                 detectedClipboardURL = nil
                 presentQuickAdd(url: url)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(VidindirTheme.accent)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
