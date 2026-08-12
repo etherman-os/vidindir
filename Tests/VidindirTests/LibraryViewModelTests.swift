@@ -197,7 +197,11 @@ struct LibraryViewModelTests {
                 sourceLabel: "Generic"
             )
         ))
-        try await eventually { model.items.contains { $0.id == saved.id } }
+        try await eventually {
+            model.items.contains { $0.id == saved.id }
+                && model.inboxCount == 1
+                && model.libraryCount == 1
+        }
         let inboxItem = try #require(model.items.first { $0.id == saved.id })
         #expect(model.inboxCount == 1)
         #expect(model.libraryCount == 1)
