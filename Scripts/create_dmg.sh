@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="${0:A:h:h}"
+source "$ROOT_DIR/Scripts/dmg_helpers.zsh"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 
 if [[ -z "${APP_PATH:-}" ]]; then
@@ -46,7 +47,7 @@ MOUNT_DEVICE=""
 
 cleanup() {
   if [[ -n "$MOUNT_DEVICE" ]]; then
-    /usr/bin/hdiutil detach "$MOUNT_DEVICE" -quiet >/dev/null 2>&1 || true
+    detach_disk_image "$MOUNT_DEVICE" >/dev/null 2>&1 || true
   fi
 
   case "$WORK_DIR" in
@@ -123,7 +124,7 @@ then
 fi
 
 /bin/sync
-/usr/bin/hdiutil detach "$MOUNT_DEVICE" -quiet
+detach_disk_image "$MOUNT_DEVICE"
 MOUNT_DEVICE=""
 
 if [[ -e "$OUTPUT_DMG" ]]; then

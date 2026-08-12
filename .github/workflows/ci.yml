@@ -37,6 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ./Scripts/test_dmg_detach_retry.sh
           if [[ "${{ matrix.runner }}" == "macos-15" ]]; then
             ARCHITECTURES="arm64 x86_64" ./Scripts/package_app.sh
             universal_executables=(

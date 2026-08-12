@@ -93,6 +93,7 @@ jobs:
       - name: Test
         run: |
           ./Scripts/test_release_mode.sh
+          ./Scripts/test_dmg_detach_retry.sh
           /usr/bin/swift Scripts/verify_sparkle_feed.swift --self-test
           swift test
 
