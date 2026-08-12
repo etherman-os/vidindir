@@ -37,14 +37,20 @@ struct QuickAddView: View {
                     .focused($linkIsFocused)
                     .onSubmit { submit(allowDuplicate: false) }
 
-                if let errorMessage {
+                if let validationMessage {
+                    Label(validationMessage, systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                } else if let errorMessage {
                     Label(errorMessage, systemImage: "exclamationmark.circle")
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
             }
 
-            if isResolvingMetadata || resolvedMetadata != nil || metadataMessage != nil {
+            if parsedInput.isBatch, parsedInput.isValid {
+                batchPreview
+            } else if isResolvingMetadata || resolvedMetadata != nil || metadataMessage != nil {
                 metadataPreview
             }
 
@@ -132,13 +138,13 @@ struct QuickAddView: View {
                     if isWorking {
                         ProgressView().controlSize(.small)
                     } else {
-                        Text(action == .saveOnly ? "Add" : "Add & Download")
+                        Text(submitButtonTitle)
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(VidindirTheme.accent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(validURL == nil || isWorking)
+                .disabled(!parsedInput.isValid || isWorking)
             }
         }
         .padding(20)
@@ -147,14 +153,30 @@ struct QuickAddView: View {
             if linkText.isEmpty, !initialLink.isEmpty {
                 linkText = initialLink
             } else if linkText.isEmpty,
-               let clipboard = NSPasteboard.general.string(forType: .string),
-               Self.validHTTPURL(clipboard) != nil {
+                      let clipboard = NSPasteboard.general.string(forType: .string),
+                      QuickAddInput.parse(clipboard).isValid {
                 linkText = clipboard.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             DispatchQueue.main.async { linkIsFocused = true }
         }
         .task(id: linkText) {
             await resolveCurrentLink()
+        }
+    }
+
+    private var batchPreview: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("\(parsedInput.urls.count) links ready", systemImage: "link")
+                .font(.subheadline.weight(.medium))
+            Text(batchPreviewMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if parsedInput.duplicateTokenCount > 0 {
+                Text("\(parsedInput.duplicateTokenCount) repeated pasted link\(parsedInput.duplicateTokenCount == 1 ? "" : "s") will only be handled once.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -258,8 +280,40 @@ struct QuickAddView: View {
         }
     }
 
-    private var validURL: URL? {
-        Self.validHTTPURL(linkText)
+    private var parsedInput: QuickAddInput {
+        QuickAddInput.parse(linkText)
+    }
+
+    private var singleURL: URL? {
+        guard parsedInput.isValid, parsedInput.urls.count == 1 else { return nil }
+        return parsedInput.urls[0]
+    }
+
+    private var validationMessage: String? {
+        guard !linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              parsedInput.invalidTokenCount > 0 else { return nil }
+        return "Paste complete http(s) links separated by spaces or new lines."
+    }
+
+    private var batchPreviewMessage: String {
+        switch action {
+        case .saveOnly:
+            "New links will be saved together. Links already in your library will not be duplicated. Details fill in after adding."
+        case .downloadNow:
+            "New links will be saved, existing library links will be reused, and the resulting items will enter the download queue."
+        }
+    }
+
+    private var submitButtonTitle: String {
+        guard parsedInput.isBatch else {
+            return action == .saveOnly ? "Add" : "Add & Download"
+        }
+        switch action {
+        case .saveOnly:
+            return "Add \(parsedInput.urls.count) Links"
+        case .downloadNow:
+            return "Add & Download \(parsedInput.urls.count)"
+        }
     }
 
     private var formatBinding: Binding<DownloadFormat> {
@@ -277,7 +331,12 @@ struct QuickAddView: View {
     }
 
     private func submit(allowDuplicate: Bool) {
-        guard let url = validURL, !isWorking else { return }
+        guard parsedInput.isValid, !isWorking else { return }
+        if parsedInput.isBatch {
+            submitBatch()
+            return
+        }
+        guard let url = singleURL else { return }
         isWorking = true
         errorMessage = nil
         Task {
@@ -307,22 +366,66 @@ struct QuickAddView: View {
         }
     }
 
-    private static func validHTTPURL(_ value: String) -> URL? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed),
-              let scheme = url.scheme?.lowercased(),
-              (scheme == "http" || scheme == "https"),
-              url.host != nil else {
-            return nil
+    private func submitBatch() {
+        let urls = parsedInput.urls
+        let selectedAction = action
+        let selectedDestination = destination
+        isWorking = true
+        errorMessage = nil
+        duplicateCandidates = []
+
+        Task {
+            let result = await library.addLinks(urls, destination: selectedDestination)
+            isWorking = false
+
+            if selectedAction == .downloadNow, !result.downloadItems.isEmpty {
+                library.destination = .activeDownloads
+                download.startDownloads(result.downloadItems)
+            }
+
+            if let alert = batchResultAlert(result, action: selectedAction) {
+                library.alert = alert
+            }
+            close()
         }
-        return url
+    }
+
+    private func batchResultAlert(_ result: BatchAddResult, action: Action) -> AppAlert? {
+        let addedCount = result.addedItems.count
+        let failedCount = result.failedURLs.count
+
+        switch action {
+        case .saveOnly:
+            guard result.duplicateCount > 0 || failedCount > 0 else { return nil }
+            var details: [String] = []
+            if result.duplicateCount > 0 {
+                details.append("\(result.duplicateCount) already in your library")
+            }
+            if failedCount > 0 {
+                details.append("\(failedCount) could not be saved")
+            }
+            return AppAlert(
+                title: addedCount == 0
+                    ? "No New Links Added"
+                    : "Added \(addedCount) Link\(addedCount == 1 ? "" : "s")",
+                message: details.joined(separator: "; ") + "."
+            )
+        case .downloadNow:
+            guard failedCount > 0 else { return nil }
+            return AppAlert(
+                title: result.downloadItems.isEmpty ? "No Downloads Queued" : "Some Links Could Not Be Added",
+                message: "\(failedCount) link\(failedCount == 1 ? "" : "s") could not be saved. The remaining items can continue through the download queue."
+            )
+        }
     }
 
     private func resolveCurrentLink() async {
         resolvedMetadata = nil
         metadataMessage = nil
         isResolvingMetadata = false
-        guard let url = validURL else { return }
+        duplicateCandidates = []
+        errorMessage = nil
+        guard let url = singleURL else { return }
         do {
             try await Task.sleep(for: .milliseconds(350))
             try Task.checkCancellation()

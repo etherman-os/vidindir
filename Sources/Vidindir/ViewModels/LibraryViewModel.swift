@@ -59,6 +59,13 @@ enum LibraryDestination: Hashable, Identifiable {
     }
 }
 
+struct BatchAddResult: Sendable {
+    let addedItems: [LibraryItemSummary]
+    let downloadItems: [LibraryItemSummary]
+    let duplicateCount: Int
+    let failedURLs: [URL]
+}
+
 enum LibraryDisplayMode: String, CaseIterable, Identifiable {
     case grid
     case list
@@ -120,6 +127,7 @@ final class LibraryViewModel: ObservableObject {
     private var didBootstrap = false
     private var loadTask: Task<Void, Never>?
     private var metadataRefreshTask: Task<Void, Never>?
+    private var batchMetadataRefreshTask: Task<Void, Never>?
     private var loadGeneration = UUID()
 
     private static let pageSize = 100
@@ -150,6 +158,7 @@ final class LibraryViewModel: ObservableObject {
     deinit {
         loadTask?.cancel()
         metadataRefreshTask?.cancel()
+        batchMetadataRefreshTask?.cancel()
     }
 
     var isAvailable: Bool {
@@ -407,6 +416,71 @@ final class LibraryViewModel: ObservableObject {
                 selectedMediaItemID = savedItem.id
             }
         }
+        return result
+    }
+
+    func addLinks(
+        _ urls: [URL],
+        destination: SaveDestination
+    ) async -> BatchAddResult {
+        guard let libraryRepository else {
+            return BatchAddResult(
+                addedItems: [],
+                downloadItems: [],
+                duplicateCount: 0,
+                failedURLs: urls
+            )
+        }
+
+        var addedIDs: [MediaItemID] = []
+        var orderedDownloadIDs: [MediaItemID] = []
+        var seenDownloadIDs = Set<MediaItemID>()
+        var duplicateCount = 0
+        var failedURLs: [URL] = []
+
+        for url in urls {
+            do {
+                switch try await libraryRepository.saveLink(SaveLinkCommand(
+                    sourceURL: url,
+                    destination: destination
+                )) {
+                case .saved(let item):
+                    addedIDs.append(item.id)
+                    if seenDownloadIDs.insert(item.id).inserted {
+                        orderedDownloadIDs.append(item.id)
+                    }
+                case .duplicate(let candidates):
+                    duplicateCount += 1
+                    guard let existing = candidates.first?.mediaItem else {
+                        failedURLs.append(url)
+                        continue
+                    }
+                    if seenDownloadIDs.insert(existing.id).inserted {
+                        orderedDownloadIDs.append(existing.id)
+                    }
+                }
+            } catch {
+                failedURLs.append(url)
+            }
+        }
+
+        await refreshCollections()
+        await reloadNow()
+
+        let summaryIDs = Set(addedIDs).union(orderedDownloadIDs)
+        let summaries = (try? await libraryRepository.summaries(
+            mediaItemIDs: summaryIDs,
+            workspaceID: VidindirIdentity.personalWorkspace
+        )) ?? []
+        let summariesByID = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) })
+
+        let result = BatchAddResult(
+            addedItems: addedIDs.compactMap { summariesByID[$0] },
+            downloadItems: orderedDownloadIDs.compactMap { summariesByID[$0] },
+            duplicateCount: duplicateCount,
+            failedURLs: failedURLs
+        )
+        refreshAddedMetadataInBackground(result.addedItems)
         return result
     }
 
@@ -777,9 +851,31 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    private func refreshAddedMetadataInBackground(_ items: [LibraryItemSummary]) {
+        guard !items.isEmpty, metadataResolver != nil else { return }
+        let previousTask = batchMetadataRefreshTask
+        batchMetadataRefreshTask = Task { [weak self] in
+            if let previousTask {
+                await previousTask.value
+            }
+            guard !Task.isCancelled, let self else { return }
+            for item in items {
+                guard !Task.isCancelled else { return }
+                await self.resolveAndStoreMetadata(
+                    item,
+                    reportsFailure: false,
+                    reloadAfterUpdate: false
+                )
+            }
+            guard !Task.isCancelled else { return }
+            await self.reloadNow()
+        }
+    }
+
     private func resolveAndStoreMetadata(
         _ item: LibraryItemSummary,
-        reportsFailure: Bool
+        reportsFailure: Bool,
+        reloadAfterUpdate: Bool = true
     ) async {
         guard let libraryRepository,
               let metadataResolver,
@@ -804,7 +900,9 @@ final class LibraryViewModel: ObservableObject {
                     errorCode: (metadata.title ?? media.title) == nil ? "missing_title" : nil
                 )
             ))
-            await reloadNow()
+            if reloadAfterUpdate {
+                await reloadNow()
+            }
         } catch {
             let media = item.mediaItem
             _ = try? await libraryRepository.updateMedia(UpdateMediaCommand(
@@ -821,7 +919,9 @@ final class LibraryViewModel: ObservableObject {
                     errorCode: "metadata_unavailable"
                 )
             ))
-            await reloadNow()
+            if reloadAfterUpdate {
+                await reloadNow()
+            }
             if reportsFailure {
                 alert = AppAlert(
                     title: "Video details are unavailable",

@@ -278,6 +278,95 @@ struct LibraryViewModelTests {
         #expect(Set(allItems.map(\.id)).count == 501)
     }
 
+    @Test @MainActor func batchAddSkipsLibraryDuplicatesButKeepsThemDownloadable() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let existingURL = URL(string: "https://example.com/already-saved")!
+        let existing = try savedItem(await fixture.libraryRepository.saveLink(SaveLinkCommand(
+            sourceURL: existingURL,
+            destination: .libraryOnly
+        )))
+        let firstURL = URL(string: "https://example.com/batch-new-one")!
+        let secondURL = URL(string: "https://example.com/batch-new-two")!
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: nil
+        )
+        await model.bootstrapNow()
+
+        let result = await model.addLinks(
+            [firstURL, existingURL, secondURL],
+            destination: .inbox
+        )
+
+        #expect(result.addedItems.map(\.mediaItem.sourceURL) == [firstURL, secondURL])
+        #expect(result.duplicateCount == 1)
+        #expect(result.failedURLs.isEmpty)
+        #expect(result.downloadItems.map(\.mediaItem.sourceURL) == [firstURL, existingURL, secondURL])
+        #expect(result.downloadItems.map(\.id).contains(existing.id))
+        #expect(try await fixture.libraryRepository.page(LibraryQuery(scope: .inbox)).totalCount == 2)
+        #expect(try await fixture.libraryRepository.page(LibraryQuery(scope: .all)).totalCount == 3)
+    }
+
+    @Test @MainActor func batchAddResolvesNewMetadataInBackground() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let firstURL = URL(string: "https://example.com/batch-metadata-one")!
+        let secondURL = URL(string: "https://example.com/batch-metadata-two")!
+        let model = fixture.makeModel()
+        await model.bootstrapNow()
+
+        let result = await model.addLinks(
+            [firstURL, secondURL],
+            destination: .libraryOnly
+        )
+        #expect(result.addedItems.count == 2)
+
+        try await eventually {
+            guard let page = try? await fixture.libraryRepository.page(LibraryQuery(scope: .all)) else {
+                return false
+            }
+            let items = page.items.filter { [firstURL, secondURL].contains($0.mediaItem.sourceURL) }
+            return items.count == 2
+                && items.allSatisfy { $0.mediaItem.title == "Resolved Video" }
+                && items.allSatisfy { $0.mediaItem.metadataStatus == .resolved }
+        }
+    }
+
+    @Test @MainActor func consecutiveBatchesKeepEarlierMetadataResolutionQueued() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let urls = [
+            URL(string: "https://example.com/queued-metadata-one")!,
+            URL(string: "https://example.com/queued-metadata-two")!,
+            URL(string: "https://example.com/queued-metadata-three")!,
+        ]
+        let model = LibraryViewModel(
+            libraryRepository: fixture.libraryRepository,
+            downloadRepository: fixture.downloadRepository,
+            legacyImporter: nil,
+            legacyHistoryData: nil,
+            metadataResolver: DelayedMetadataResolver()
+        )
+        await model.bootstrapNow()
+
+        _ = await model.addLinks(Array(urls.prefix(2)), destination: .libraryOnly)
+        _ = await model.addLinks([urls[2]], destination: .libraryOnly)
+
+        try await eventually {
+            guard let page = try? await fixture.libraryRepository.page(LibraryQuery(scope: .all)) else {
+                return false
+            }
+            let items = page.items.filter { urls.contains($0.mediaItem.sourceURL) }
+            return items.count == 3
+                && items.allSatisfy { $0.mediaItem.title == "Delayed Video" }
+                && items.allSatisfy { $0.mediaItem.metadataStatus == .resolved }
+        }
+    }
+
     @Test @MainActor func quickLookUsesOnlyAnExistingLocalAsset() async throws {
         let fixture = try LibraryModelFixture()
         defer { fixture.remove() }
@@ -500,6 +589,19 @@ private struct FixedMetadataResolver: MediaMetadataResolving {
     func resolve(_ sourceURL: URL) async throws -> ResolvedMediaMetadata {
         ResolvedMediaMetadata(
             title: "Resolved Video",
+            creator: "Etherman",
+            durationSeconds: 95,
+            thumbnailURL: URL(string: "https://example.com/thumb.jpg"),
+            sourceLabel: "Generic"
+        )
+    }
+}
+
+private struct DelayedMetadataResolver: MediaMetadataResolving {
+    func resolve(_ sourceURL: URL) async throws -> ResolvedMediaMetadata {
+        try await Task.sleep(for: .milliseconds(100))
+        return ResolvedMediaMetadata(
+            title: "Delayed Video",
             creator: "Etherman",
             durationSeconds: 95,
             thumbnailURL: URL(string: "https://example.com/thumb.jpg"),
