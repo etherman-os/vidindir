@@ -73,95 +73,87 @@ struct MediaInspectorView: View {
                     LocalStatusLabel(item: item)
                 }
 
-                VStack(spacing: 9) {
+                Divider()
+
+                Button {
+                    startDownload(item)
+                } label: {
+                    Label(
+                        item.localAssetStatus == .available
+                            ? "Download Again"
+                            : "Download on This Mac",
+                        systemImage: "arrow.down.circle"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(VidindirTheme.accent)
+
+                if item.localAssetStatus == .available {
                     Button {
-                        startDownload(item)
+                        library.revealLocalFile(item)
                     } label: {
-                        Label(
-                            item.localAssetStatus == .available
-                                ? "Download Again"
-                                : "Download on This Mac",
-                            systemImage: "arrow.down.circle"
-                        )
-                        .frame(maxWidth: .infinity)
+                        Label("Reveal in Finder", systemImage: "folder")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(VidindirTheme.accent)
+                }
 
-                    if item.localAssetStatus == .available {
-                        Button {
-                            library.revealLocalFile(item)
-                        } label: {
-                            Label("Reveal in Finder", systemImage: "folder")
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
+                Button {
+                    library.openSource(item)
+                } label: {
+                    Label("Open Source", systemImage: "safari")
+                }
 
-                    HStack {
-                        Button {
-                            library.openSource(item)
-                        } label: {
-                            Label("Open Source", systemImage: "safari")
-                        }
-                        Button {
-                            library.copySourceURL(item)
-                        } label: {
-                            Label("Copy URL", systemImage: "doc.on.doc")
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    library.copySourceURL(item)
+                } label: {
+                    Label("Copy URL", systemImage: "doc.on.doc")
+                }
 
-                    if library.destination == .inbox {
-                        Button {
-                            library.removeFromInbox(item)
-                        } label: {
-                            Label("Remove from Inbox", systemImage: "tray.and.arrow.up")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .help("Keeps the item in All Media and removes it only from the review list.")
-                    }
-
-                    HStack {
-                        Button {
-                            renameText = item.mediaItem.title ?? ""
-                            showsRename = true
-                        } label: {
-                            Label("Rename…", systemImage: "pencil")
-                        }
-
-                        Button {
-                            library.refreshMetadata(item)
-                        } label: {
-                            if library.isResolvingMetadata(for: item) {
-                                Label("Fetching Details…", systemImage: "arrow.triangle.2.circlepath")
-                            } else {
-                                Label("Fetch Details", systemImage: "arrow.clockwise")
-                            }
-                        }
-                        .disabled(library.isResolvingMetadata(for: item))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
+                if library.destination == .inbox {
                     Button {
-                        library.setFavorite(item, value: !item.isFavorite)
+                        library.removeFromInbox(item)
                     } label: {
-                        Label(
-                            item.isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                            systemImage: item.isFavorite ? "star.slash" : "star"
-                        )
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Label("Remove from Inbox", systemImage: "tray.and.arrow.up")
                     }
-                    .buttonStyle(.plain)
+                    .help("Keeps the item in All Media and removes it only from the review list.")
+                }
 
-                    Divider()
+                Divider()
 
-                    Button("Delete from Library", role: .destructive) {
-                        confirmsDelete = true
+                Button {
+                    renameText = item.mediaItem.title ?? ""
+                    showsRename = true
+                } label: {
+                    Label("Rename…", systemImage: "pencil")
+                }
+
+                Button {
+                    library.refreshMetadata(item)
+                } label: {
+                    if library.isResolvingMetadata(for: item) {
+                        Label("Fetching Details…", systemImage: "arrow.triangle.2.circlepath")
+                    } else {
+                        Label("Fetch Details", systemImage: "arrow.clockwise")
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .disabled(library.isResolvingMetadata(for: item))
+
+                Button {
+                    library.setFavorite(item, value: !item.isFavorite)
+                } label: {
+                    Label(
+                        item.isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                        systemImage: item.isFavorite ? "star.slash" : "star"
+                    )
+                }
+
+                Divider()
+
+                Button("Delete from Library", role: .destructive) {
+                    confirmsDelete = true
                 }
             }
             .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .alert("Delete from Library?", isPresented: $confirmsDelete) {
             Button("Cancel", role: .cancel) {}
@@ -195,7 +187,6 @@ struct MediaInspectorView: View {
                     .dateTime.month(.abbreviated).day().year()
                 )
             )
-            fact("Workspace", "Personal")
         }
         .font(.subheadline)
     }
