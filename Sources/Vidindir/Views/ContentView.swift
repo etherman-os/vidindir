@@ -18,7 +18,6 @@ struct ContentView: View {
     @State private var didInitializeAdaptiveLayout = false
     @State private var inspectorWasAutomaticallyCollapsed = false
     @State private var sidebarWasAutomaticallyCollapsed = false
-    @State private var quickAddInitialLink = ""
     @State private var detectedClipboardURL: URL?
     @State private var lastInspectedClipboardValue = ""
     @State private var compactSearchPresented = false
@@ -73,7 +72,7 @@ struct ContentView: View {
             QuickAddView(
                 library: library,
                 download: model,
-                initialLink: quickAddInitialLink,
+                initialLink: library.quickAddInitialText,
                 close: { library.isQuickAddPresented = false }
             )
         }
@@ -115,11 +114,6 @@ struct ContentView: View {
                 inspectClipboardIfNeeded()
             } else {
                 dismissTransientPanels()
-            }
-        }
-        .onChange(of: library.isQuickAddPresented) {
-            if !library.isQuickAddPresented {
-                quickAddInitialLink = ""
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -238,9 +232,8 @@ struct ContentView: View {
             }
 
             Button {
-                quickAddInitialLink = ""
                 compactInspectorPresented = false
-                library.isQuickAddPresented = true
+                library.presentQuickAdd()
             } label: {
                 Label("Add Link", systemImage: "plus")
             }
@@ -469,9 +462,8 @@ struct ContentView: View {
     }
 
     private func presentQuickAdd(url: URL) {
-        quickAddInitialLink = url.absoluteString
         compactInspectorPresented = false
-        library.isQuickAddPresented = true
+        library.presentQuickAdd(initialText: url.absoluteString)
     }
 
     private static func isHTTPURL(_ url: URL) -> Bool {

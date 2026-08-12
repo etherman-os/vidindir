@@ -221,7 +221,7 @@ struct LibraryBrowserView: View {
             Text(emptyDescription)
         } actions: {
             if library.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button("Add Link") { library.isQuickAddPresented = true }
+                Button("Add Link") { library.presentQuickAdd() }
                     .buttonStyle(.borderedProminent)
                     .tint(VidindirTheme.accent)
             } else {

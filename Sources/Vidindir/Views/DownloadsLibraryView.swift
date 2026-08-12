@@ -120,7 +120,7 @@ struct DownloadsLibraryView: View {
         } description: {
             Text(emptyDescription)
         } actions: {
-            Button("Add Link") { library.isQuickAddPresented = true }
+            Button("Add Link") { library.presentQuickAdd() }
                 .buttonStyle(.borderedProminent)
                 .tint(VidindirTheme.accent)
         }

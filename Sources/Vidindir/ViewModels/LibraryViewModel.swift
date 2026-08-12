@@ -107,7 +107,14 @@ final class LibraryViewModel: ObservableObject {
     @Published var selectedMediaItemID: MediaItemID?
     @Published var selectedDownloadJobID: DownloadJobID?
     @Published var quickLookPreviewURL: URL?
-    @Published var isQuickAddPresented = false
+    @Published var isQuickAddPresented = false {
+        didSet {
+            if !isQuickAddPresented {
+                quickAddInitialText = ""
+            }
+        }
+    }
+    @Published private(set) var quickAddInitialText = ""
     @Published private(set) var items: [LibraryItemSummary] = []
     @Published private(set) var downloadJobs: [DownloadJob] = []
     @Published private(set) var collections: [Collection] = []
@@ -227,6 +234,11 @@ final class LibraryViewModel: ObservableObject {
                 message: Self.userFacingMessage(for: error)
             )
         }
+    }
+
+    func presentQuickAdd(initialText: String = "") {
+        quickAddInitialText = initialText
+        isQuickAddPresented = true
     }
 
     func reload() {

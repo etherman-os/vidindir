@@ -278,6 +278,20 @@ struct LibraryViewModelTests {
         #expect(Set(allItems.map(\.id)).count == 501)
     }
 
+    @Test @MainActor func quickAddPresentationCarriesAndClearsExplicitInput() async throws {
+        let fixture = try LibraryModelFixture()
+        defer { fixture.remove() }
+        let model = fixture.makeModel()
+
+        model.presentQuickAdd(initialText: "https://example.com/one\nhttps://example.com/two")
+
+        #expect(model.isQuickAddPresented)
+        #expect(model.quickAddInitialText == "https://example.com/one\nhttps://example.com/two")
+
+        model.isQuickAddPresented = false
+        #expect(model.quickAddInitialText.isEmpty)
+    }
+
     @Test @MainActor func sortOrderChangesRepositoryBackedLibraryOrdering() async throws {
         let fixture = try LibraryModelFixture()
         defer { fixture.remove() }
