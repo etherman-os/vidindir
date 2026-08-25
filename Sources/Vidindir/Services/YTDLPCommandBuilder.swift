@@ -88,13 +88,20 @@ public struct YTDLPCommandBuilder: Sendable {
     }
 
     private func videoFormatSelector(quality: DownloadQuality) -> String {
+        // X requires AVC/H.264 video and AAC audio. Merely remuxing VP9/AV1
+        // into an MP4 container still produces an MP4 that X cannot decode.
+        // YouTube exposes its H.264 streams as avc1 and AAC streams as mp4a,
+        // so keep every fallback inside that codec family.
+        let videoFilters = "[vcodec^=avc1][ext=mp4]"
+        let audioFilters = "[acodec^=mp4a][ext=m4a]"
+        let combinedFilters = "[vcodec^=avc1][acodec^=mp4a][ext=mp4]"
+
         guard let height = quality.maximumHeight else {
-            return "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+            return "bv*\(videoFilters)+ba\(audioFilters)/b\(combinedFilters)"
         }
-        return "bv*[height<=\(height)][ext=mp4]+ba[ext=m4a]"
-            + "/b[height<=\(height)][ext=mp4]"
-            + "/bv*[height<=\(height)]+ba"
-            + "/b[height<=\(height)]"
+
+        return "bv*[height<=\(height)]\(videoFilters)+ba\(audioFilters)"
+            + "/b[height<=\(height)]\(combinedFilters)"
     }
 
     private func requiredAbsoluteURL(_ url: URL?, tool: ToolBinary) throws -> URL {
